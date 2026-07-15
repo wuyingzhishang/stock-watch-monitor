@@ -57,6 +57,7 @@ test("serves the application shell", async () => {
   const html = await response.text();
   assert.match(html, /货架雷达/);
   assert.match(html, /state-store\.js/);
+  assert.match(html, /github\.com\/YuZangA\/stock-watch-monitor\.git/);
 
   const stateStoreResponse = await fetch(`${baseUrl}/state-store.js`);
   assert.equal(stateStoreResponse.status, 200);
