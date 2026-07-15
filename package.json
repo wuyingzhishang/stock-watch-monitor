@@ -1,0 +1,16 @@
+{
+  "name": "stock-watch-monitor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "店铺库存监控台，支持 Cloudflare Pages 和 Docker 部署",
+  "scripts": {
+    "start": "node server.mjs",
+    "start:docker": "docker compose up -d --build",
+    "dev": "wrangler pages dev .",
+    "deploy": "wrangler pages deploy .",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "undici": "7.28.0"
+  }
+}

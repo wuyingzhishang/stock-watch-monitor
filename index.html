@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f6f7fb" />
+    <title>货架雷达 · 店铺库存监控</title>
+    <link rel="stylesheet" href="./styles.css?v=5" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">⌁</span><span>货架雷达</span></div>
+        <div class="workspace-switcher"><span class="workspace-dot"></span><span>我的监控空间</span><span class="chevron">⌄</span></div>
+        <nav class="nav-list" aria-label="主导航">
+          <button class="nav-item active" data-view="overview"><span class="nav-icon">◈</span><span>总览</span></button>
+          <button class="nav-item" data-view="shops"><span class="nav-icon">▣</span><span>店铺与商品</span></button>
+          <button class="nav-item" data-view="monitors"><span class="nav-icon">◉</span><span>重点监控</span><span class="nav-count" id="navMonitorCount">1</span></button>
+          <button class="nav-item" data-view="notifications"><span class="nav-icon">⌁</span><span>通知渠道</span></button>
+          <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span><span>系统设置</span></button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="sidebar-tip"><span class="tip-dot"></span><div><strong id="pollingStatusLabel">轮询服务在线</strong><small>上次检查 <span id="sidebarLastCheck">刚刚</span></small></div></div>
+          <button class="ghost-button" id="exportConfig">导出配置 <span>↗</span></button>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div><p class="eyebrow">库存运营台</p><h1 id="pageTitle">监控总览</h1></div>
+          <div class="topbar-actions"><span class="runtime-badge" id="deploymentModeBadge">检测中</span><span class="last-sync">同步于 <strong id="lastSync">刚刚</strong></span><button class="icon-button" id="refreshButton" title="立即刷新">↻</button><button class="primary-button" id="addShopButton">＋ 添加店铺</button></div>
+        </header>
+
+        <section class="view active" id="view-overview">
+          <div class="hero-row">
+            <div><p class="section-kicker">今日状态</p><h2>把库存变化，放在一个安静的工作台里。</h2><p class="muted">自动轮询店铺、标记零库存，并在恢复供货时通知你。</p></div>
+            <div class="poll-control"><span>自动轮询</span><select id="pollInterval"><option value="5">每 5 分钟</option><option value="10">每 10 分钟</option><option value="15">每 15 分钟</option><option value="30">每 30 分钟</option><option value="60">每 60 分钟</option></select><span class="status-pill online">运行中</span></div>
+          </div>
+
+          <div class="stats-grid">
+            <article class="stat-card"><div class="stat-label">已接入店铺</div><div class="stat-value" id="statShops">1</div><div class="stat-note"><span class="trend up">＋1</span> 本周新增</div></article>
+            <article class="stat-card"><div class="stat-label">监控商品</div><div class="stat-value" id="statMonitors">1</div><div class="stat-note"><span class="trend neutral">重点</span> 仅关注变化</div></article>
+            <article class="stat-card"><div class="stat-label">当前缺货</div><div class="stat-value danger" id="statOutOfStock">1</div><div class="stat-note"><span class="trend down">需处理</span> 零库存商品</div></article>
+            <article class="stat-card"><div class="stat-label">通知渠道</div><div class="stat-value" id="statChannels">0</div><div class="stat-note"><span class="trend up">已连接</span> 按服务端配置</div></article>
+          </div>
+
+          <div class="content-grid">
+            <section class="panel wide-panel"><div class="panel-heading"><div><p class="section-kicker">重点监控</p><h3>商品库存</h3></div><button class="text-button" data-view-jump="monitors">查看全部 →</button></div><div class="table-wrap"><table><thead><tr><th>商品</th><th>分类</th><th>库存</th><th>状态</th><th>监控</th><th></th></tr></thead><tbody id="monitorTableBody"></tbody></table></div></section>
+            <section class="panel activity-panel"><div class="panel-heading"><div><p class="section-kicker">实时动态</p><h3>最近活动</h3></div><span class="live-indicator">● Live</span></div><div id="activityList" class="activity-list"></div></section>
+          </div>
+
+          <section class="panel shops-panel"><div class="panel-heading"><div><p class="section-kicker">已接入资源</p><h3>我的店铺</h3></div><button class="text-button" data-view-jump="shops">管理店铺 →</button></div><div class="shop-grid" id="shopGrid"></div></section>
+        </section>
+
+        <section class="view" id="view-shops">
+          <div class="page-intro"><div><p class="section-kicker">资源管理</p><h2>店铺与商品</h2><p class="muted">店铺可自由增删，商品支持分类检索、排序和重点监控。</p></div><button class="primary-button" id="addShopButtonInline">＋ 添加店铺</button></div>
+          <div class="shop-layout"><div class="panel shop-list-panel"><div class="panel-heading"><h3>店铺列表</h3><span class="muted" id="shopCountLabel">1 个店铺</span></div><div id="shopList" class="shop-list"></div></div><div class="panel product-panel"><div class="product-toolbar"><div><p class="section-kicker">商品清单</p><h3 id="productPanelTitle">示例店铺</h3></div><div class="toolbar-actions"><input id="productSearch" class="search-input" placeholder="搜索商品" /><select id="categoryFilter"><option value="all">全部分类</option></select><select id="stockFilter"><option value="all">全部库存</option><option value="out">缺货</option><option value="low">库存 ≤ 5</option><option value="in">有库存</option></select></div></div><div class="category-chips" id="categoryChips"></div><div class="table-wrap product-table-wrap"><table><thead><tr><th class="drag-col"></th><th>商品名称</th><th>分类</th><th>价格</th><th>库存</th><th>重点</th><th>操作</th></tr></thead><tbody id="productTableBody"></tbody></table></div></div></div>
+        </section>
+
+        <section class="view" id="view-monitors">
+          <div class="page-intro"><div><p class="section-kicker">规则与事件</p><h2>重点监控</h2><p class="muted">零库存触发后，按规则通知；恢复库存时可再次提醒。</p></div><div class="page-actions"><button class="secondary-button" id="markAllRead">全部已读</button><button class="primary-button" data-view-jump="notifications">配置通知</button></div></div>
+          <div class="monitor-layout"><section class="panel"><div class="panel-heading"><div><h3>监控规则</h3><span class="muted">共 <span id="monitorRuleCount">1</span> 条</span></div><button class="text-button" id="addRuleButton">＋ 新建规则</button></div><div id="monitorRuleList" class="rule-list"></div></section><section class="panel"><div class="panel-heading"><div><h3>库存事件</h3><span class="muted">最近 7 天</span></div><span class="status-pill">全部</span></div><div id="eventList" class="event-list"></div></section></div>
+        </section>
+
+        <section class="view" id="view-notifications">
+          <div class="page-intro"><div><p class="section-kicker">通知中心</p><h2>通知渠道</h2><p class="muted">接入后，缺货和恢复库存事件会按规则发送。</p></div><button class="primary-button" id="testNotificationButton">发送测试通知</button></div>
+          <div class="channel-grid" id="channelGrid"></div>
+          <section class="panel notification-log"><div class="panel-heading"><div><p class="section-kicker">投递记录</p><h3>最近通知</h3></div><span class="muted">仅保留本地记录</span></div><div id="notificationLog" class="notification-log-list"></div></section>
+        </section>
+
+        <section class="view" id="view-settings">
+          <div class="page-intro"><div><p class="section-kicker">运行参数</p><h2>系统设置</h2><p class="muted">轮询代理、数据保留和页面偏好。</p></div><button class="primary-button" id="saveSettingsButton">保存设置</button></div>
+          <div class="settings-grid"><section class="panel"><div class="panel-heading"><div><p class="section-kicker">访问链路</p><h3>代理设置</h3></div><span class="status-pill">可选</span></div><label class="field-label" for="proxyUrl">HTTP / HTTPS 代理地址</label><input id="proxyUrl" class="full-input" placeholder="例如 http://user:pass@host:port" /><p class="field-hint">Docker 版本需将 ALLOW_CLIENT_PROXY 设置为 true 才允许页面覆盖服务端代理；Cloudflare 版本建议使用固定中转出口。</p><div class="divider"></div><label class="toggle-row"><span><strong>失败时保留上次库存</strong><small>网络异常时不覆盖最新数据</small></span><input type="checkbox" id="keepLastStock" checked /><span class="toggle"></span></label></section><section class="panel"><div class="panel-heading"><div><p class="section-kicker">轮询策略</p><h3>检查计划</h3></div></div><label class="field-label" for="settingsInterval">默认轮询间隔</label><select id="settingsInterval" class="full-input"><option value="5">每 5 分钟</option><option value="10">每 10 分钟</option><option value="15">每 15 分钟</option><option value="30">每 30 分钟</option><option value="60">每 60 分钟</option></select><div class="divider"></div><label class="toggle-row"><span><strong>恢复库存时通知</strong><small>缺货恢复后发送一条提醒</small></span><input type="checkbox" id="notifyRecovery" checked /><span class="toggle"></span></label><label class="toggle-row"><span><strong>仅通知监控商品</strong><small>忽略未加入重点监控的商品</small></span><input type="checkbox" id="notifyOnlyMonitored" checked /><span class="toggle"></span></label></section></div>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="shopModal" aria-hidden="true"><div class="modal"><div class="modal-heading"><div><p class="section-kicker">新增资源</p><h3>添加店铺</h3></div><button class="icon-button" data-close-modal="shopModal">×</button></div><form id="shopForm"><label class="field-label" for="shopName">店铺名称</label><input id="shopName" class="full-input" placeholder="例如：示例店铺" required /><label class="field-label" for="shopUrl">店铺链接</label><input id="shopUrl" class="full-input" placeholder="请输入店铺链接" required /><label class="field-label" for="shopNote">备注</label><textarea id="shopNote" class="full-input textarea" placeholder="可选"></textarea><div class="modal-actions"><button type="button" class="secondary-button" data-close-modal="shopModal">取消</button><button type="submit" class="primary-button">保存并拉取商品</button></div></form></div></div>
+
+    <div class="modal-backdrop" id="channelModal" aria-hidden="true"><div class="modal"><div class="modal-heading"><div><p class="section-kicker">安全配置</p><h3 id="channelModalTitle">配置通知渠道</h3></div><button type="button" class="icon-button" data-close-modal="channelModal">×</button></div><form id="channelConfigForm"><label class="field-label" for="channelAdminToken">管理口令</label><input id="channelAdminToken" class="full-input" type="password" autocomplete="current-password" /><p class="field-hint" id="channelAdminHint"></p><div class="divider"></div><div id="channelFields" class="dynamic-fields"></div><label class="toggle-row compact-toggle"><span><strong>清空当前渠道配置</strong><small>保存后停止向该渠道发送通知</small></span><input type="checkbox" id="clearChannelConfig" /><span class="toggle"></span></label><div class="modal-actions"><button type="button" class="secondary-button" data-close-modal="channelModal">取消</button><button type="submit" class="primary-button" id="saveChannelConfigButton">保存配置</button></div></form></div></div>
+
+    <div class="toast" id="toast" role="status"></div>
+    <script src="./state-store.js?v=1" defer></script>
+    <script src="./app.js?v=10" defer></script>
+  </body>
+</html>

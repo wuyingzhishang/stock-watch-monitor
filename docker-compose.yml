@@ -1,0 +1,23 @@
+services:
+  stock-watch-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stock-watch-monitor
+    restart: unless-stopped
+    ports:
+      - "8788:8788"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+    environment:
+      PORT: "8788"
+      HOST: "0.0.0.0"
+      DEPLOYMENT_MODE: "docker"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8788/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
