@@ -17,6 +17,7 @@ export async function onRequestGet(context) {
       wecom: Boolean(context.env.WECOM_WEBHOOK)
     },
     webConfigSupported: false,
+    backgroundMonitorSupported: false,
     setupRequired: false,
     deploymentMode: "cloudflare"
   });

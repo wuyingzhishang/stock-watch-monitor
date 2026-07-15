@@ -8,6 +8,13 @@
 
 页面顶部会显示当前运行环境：Docker 容器显示“Docker 版”，Cloudflare Pages 显示“Cloudflare 版”，直接运行服务端显示“Node 版”。
 
+## 获取项目
+
+```powershell
+git clone https://github.com/YuZangA/stock-watch-monitor.git
+Set-Location -LiteralPath '.\stock-watch-monitor'
+```
+
 ## 本地运行
 
 需要 Node.js。首次运行：
@@ -47,7 +54,7 @@ Docker 版可以直接在“通知渠道”页面点击“配置”填写密钥�
 - `DINGTALK_WEBHOOK`
 - `WECOM_WEBHOOK`
 
-Cloudflare Pages 无法像 Docker 一样持久化网页提交的配置，因此仍需使用项目 Secrets。不要把密钥写入 `app.js`、提交到仓库或放进 Pages 普通静态变量。`.assetsignore` 只允许部署三个前端静态文件，服务端源码和 `.env` 不会作为静态资源上传。
+Cloudflare Pages 无法像 Docker 一样持久化网页提交的配置，因此仍需使用项目 Secrets。不要把密钥写入 `app.js`、提交到仓库或放进 Pages 普通静态变量。`.assetsignore` 使用前端静态文件白名单，服务端源码和 `.env` 不会作为静态资源上传。
 
 代理地址字段已保留在系统设置中。Cloudflare Workers 原生出站请求不支持把任意用户输入直接作为传统 HTTP/SOCKS 代理，因此生产环境建议使用固定的代理出口或自建中转 Worker，并在函数内通过环境变量绑定。
 
@@ -61,7 +68,9 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-浏览器打开 `http://服务器IP:8788`。Docker 版包含独立 Node 服务端和容器内后台轮询器；即使网页关闭，`.env` 中的 `MONITOR_*` 规则仍会继续执行。
+浏览器打开 `http://服务器IP:8788`。Docker 版会把网页中的店铺与重点监控规则自动保存到 `/data/monitor-config.json`；完成一次同步后，即使关闭网页，容器后台仍会继续轮询。首次检查只建立库存基线，之后库存进入缺货或从缺货恢复时才发送通知。
+
+`MONITOR_ENABLED` 仅用于启用手动写在 `.env` 中的兼容规则；网页同步的规则无需打开该开关。
 
 ## 检查
 

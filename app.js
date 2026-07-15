@@ -40,16 +40,17 @@ const defaultState = {
 let state = loadState();
 let selectedCategory = "all";
 let refreshTimer;
+let monitorConfigSyncTimer;
 let activeChannelId = null;
 let sessionAdminToken = "";
-let notificationCapabilities = { webConfigSupported: false, setupRequired: false };
+let notificationCapabilities = { webConfigSupported: false, backgroundMonitorSupported: false, setupRequired: false };
 let deploymentMode = "static";
 const shopRefreshControllers = new Map();
 
 function loadState() {
   return window.StockWatchState.loadStoredState(localStorage, "stock-watch-monitor", defaultState, channelDefinitions);
 }
-function saveState() { localStorage.setItem("stock-watch-monitor", JSON.stringify(state)); }
+function saveState() { localStorage.setItem("stock-watch-monitor", JSON.stringify(state)); scheduleMonitorConfigSync(); }
 function currentShop() { return state.shops.find(shop => shop.id === state.selectedShopId) || state.shops[0]; }
 function renderNoShopState() { document.getElementById("productPanelTitle").textContent = "请选择或添加店铺"; document.getElementById("categoryFilter").innerHTML = `<option value="all">全部分类</option>`; document.getElementById("categoryChips").innerHTML = ""; document.getElementById("productTableBody").innerHTML = `<tr><td colspan="7"><div class="empty-state">添加店铺后即可查询商品和库存</div></td></tr>`; }
 function fmtPrice(price) { return Number(price || 0).toFixed(2).replace(/\.00$/, ""); }
@@ -62,7 +63,7 @@ function renderAll() { renderStats(); renderOverviewTable(); renderActivity(); r
 function renderStats() {
   const products = state.shops.flatMap(shop => shop.products || []); const monitored = products.filter(product => product.monitored); const out = monitored.filter(product => product.stock === 0);
   const latestCheck = state.shops.length ? Math.max(...state.shops.map(shop => shop.lastChecked || 0)) : 0;
-  document.getElementById("statShops").textContent = state.shops.length; document.getElementById("statMonitors").textContent = monitored.length; document.getElementById("statOutOfStock").textContent = out.length; document.getElementById("statChannels").textContent = state.channels.filter(channel => channel.connected).length; document.getElementById("navMonitorCount").textContent = monitored.length; document.getElementById("pollingStatusLabel").textContent = state.shops.length ? "页面轮询运行中" : "暂无监控店铺"; document.getElementById("sidebarLastCheck").textContent = latestCheck ? relativeTime(latestCheck) : "暂无"; document.getElementById("lastSync").textContent = latestCheck ? relativeTime(latestCheck) : "暂无";
+  document.getElementById("statShops").textContent = state.shops.length; document.getElementById("statMonitors").textContent = monitored.length; document.getElementById("statOutOfStock").textContent = out.length; document.getElementById("statChannels").textContent = state.channels.filter(channel => channel.connected).length; document.getElementById("navMonitorCount").textContent = monitored.length; document.getElementById("pollingStatusLabel").textContent = state.shops.length ? (notificationCapabilities.backgroundMonitorSupported ? "Docker 后台轮询运行中" : "页面轮询运行中") : "暂无监控店铺"; document.getElementById("sidebarLastCheck").textContent = latestCheck ? relativeTime(latestCheck) : "暂无"; document.getElementById("lastSync").textContent = latestCheck ? relativeTime(latestCheck) : "暂无";
 }
 function productRow(product, shop) { const stock = stockMeta(product.stock); return `<tr><td><div class="product-name">${escapeHtml(product.name)}<span class="product-shop">${escapeHtml(shop.name)}</span></div></td><td><span class="category-tag">${escapeHtml(product.category)}</span></td><td><span class="stock-badge ${stock.cls}">${stock.label}</span></td><td><span class="muted">¥${fmtPrice(product.price)}</span></td><td><label class="switch"><input type="checkbox" data-monitor="${product.id}" ${product.monitored ? "checked" : ""}><span class="switch-track"></span></label></td><td><button class="small-action" data-focus-product="${product.id}">详情</button></td></tr>`; }
 function renderOverviewTable() { const rows = state.shops.flatMap(shop => (shop.products || []).filter(product => product.monitored).map(product => productRow(product, shop))); document.getElementById("monitorTableBody").innerHTML = rows.length ? rows.join("") : `<tr><td colspan="6"><div class="empty-state">还没有重点监控商品</div></td></tr>`; }
@@ -90,12 +91,47 @@ async function sendNotification(text, product, shop) {
   return result;
 }
 
+function monitorRulesForServer() {
+  return state.shops.filter(shop => shop.enabled).flatMap(shop => (shop.products || []).filter(product => product.monitored).map(product => ({
+    id: `${shop.id}:${product.id}`,
+    shopId: shop.id,
+    shopName: shop.name,
+    shopUrl: shop.url,
+    token: shop.token,
+    productKey: product.id,
+    productName: product.name,
+    notifyRecovery: state.notifyRecovery
+  })));
+}
+
+async function syncMonitorConfig() {
+  if (!notificationCapabilities.backgroundMonitorSupported) return false;
+  try {
+    const response = await fetch("./api/monitor-config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ interval: state.interval, rules: monitorRulesForServer() })
+    });
+    if (!response.ok) throw new Error("后台监控规则同步失败");
+    return true;
+  } catch {
+    console.warn("后台监控规则同步失败");
+    return false;
+  }
+}
+
+function scheduleMonitorConfigSync() {
+  if (!notificationCapabilities.backgroundMonitorSupported) return;
+  window.clearTimeout(monitorConfigSyncTimer);
+  monitorConfigSyncTimer = window.setTimeout(syncMonitorConfig, 300);
+}
+
 async function refreshChannelStatus(showToast = false) {
   try {
     const response = await fetch("./api/notify", { headers: { accept: "application/json" } });
     if (!response.ok) throw new Error("状态读取失败");
     const payload = await response.json();
-    notificationCapabilities = { webConfigSupported: Boolean(payload.webConfigSupported), setupRequired: Boolean(payload.setupRequired) };
+    notificationCapabilities = { webConfigSupported: Boolean(payload.webConfigSupported), backgroundMonitorSupported: Boolean(payload.backgroundMonitorSupported), setupRequired: Boolean(payload.setupRequired) };
     deploymentMode = payload.deploymentMode || "node";
     state.channels = channelDefinitions.map(channel => ({ ...channel, connected: Boolean(payload.channels?.[channel.id]) }));
     saveState(); renderChannels(); renderStats(); renderDeploymentMode();
@@ -137,7 +173,7 @@ async function saveChannelConfig(event) {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "保存失败");
     sessionAdminToken = adminToken;
-    notificationCapabilities = { webConfigSupported: Boolean(payload.webConfigSupported), setupRequired: Boolean(payload.setupRequired) };
+    notificationCapabilities = { webConfigSupported: Boolean(payload.webConfigSupported), backgroundMonitorSupported: Boolean(payload.backgroundMonitorSupported), setupRequired: Boolean(payload.setupRequired) };
     deploymentMode = payload.deploymentMode || deploymentMode;
     state.channels = channelDefinitions.map(channel => ({ ...channel, connected: Boolean(payload.channels?.[channel.id]) }));
     saveState(); renderChannels(); renderStats(); renderDeploymentMode(); closeModal("channelModal"); event.target.reset();
@@ -189,7 +225,7 @@ async function refreshShop(shop = currentShop(), silent = false) {
           state.notificationLog.unshift({ channel: "通知队列", text: `${next.name} · ${statusText}`, time: "刚刚", shopId: shop.id });
           state.notificationLog = state.notificationLog.slice(0, 8);
           addActivity(`${next.name} ${statusText}`, `${shop.name} · 刚刚`, next.stock === 0 ? "red" : "", shop.id);
-          if (next.stock === 0 || state.notifyRecovery) sendNotification(`${shop.name}：${next.name}，${statusText}`, next, shop).catch(() => {});
+          if (!notificationCapabilities.backgroundMonitorSupported && (next.stock === 0 || state.notifyRecovery)) sendNotification(`${shop.name}：${next.name}，${statusText}`, next, shop).catch(() => {});
         }
         return next;
       }).sort((a, b) => a.sortIndex - b.sortIndex).map(({ sortIndex, ...product }) => product);
@@ -258,6 +294,11 @@ document.getElementById("exportConfig").addEventListener("click", () => { const 
 document.getElementById("shopForm").addEventListener("submit", async event => { event.preventDefault(); const name = document.getElementById("shopName").value.trim(); const url = document.getElementById("shopUrl").value.trim(); const note = document.getElementById("shopNote").value.trim(); const tokenMatch = url.match(/\/shop\/([^/?#]+)/i); if (!tokenMatch) return toast("请输入有效的店铺链接"); const shop = { id: `shop-${Date.now()}`, name: name || `店铺 ${tokenMatch[1]}`, customName: Boolean(name), url, token: tokenMatch[1], note, enabled: true, favorite: false, lastChecked: Date.now(), categories: [], products: [] }; state.shops.push(shop); state.selectedShopId = shop.id; saveState(); closeModal("shopModal"); event.target.reset(); renderAll(); switchView("shops"); await refreshShop(shop); });
 
 window.addEventListener("keydown", event => { if (event.key === "Escape") document.querySelectorAll(".modal-backdrop.visible").forEach(modal => closeModal(modal.id)); });
-renderAll(); scheduleRefresh();
-refreshChannelStatus();
-refreshShop(currentShop(), true);
+async function initializeApp() {
+  renderAll();
+  scheduleRefresh();
+  await refreshChannelStatus();
+  await syncMonitorConfig();
+  await refreshShop(currentShop(), true);
+}
+initializeApp();

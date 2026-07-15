@@ -17,7 +17,14 @@
 
 ## Docker 部署
 
-### 1. 准备配置
+### 1. 获取项目
+
+```powershell
+git clone https://github.com/YuZangA/stock-watch-monitor.git
+Set-Location -LiteralPath '.\stock-watch-monitor'
+```
+
+### 2. 准备配置
 
 在项目目录执行：
 
@@ -39,7 +46,7 @@ MONITOR_PRODUCT_NAME=示例商品：云服务基础版
 
 `.env` 已被 Git 忽略，不要提交或分享。
 
-### 2. 启动
+### 3. 启动
 
 ```powershell
 docker compose up -d --build
@@ -56,7 +63,7 @@ Invoke-RestMethod 'http://127.0.0.1:8788/healthz'
 Invoke-RestMethod 'http://127.0.0.1:8788/api/stock?token=DEMO001'
 ```
 
-### 3. 停止和更新
+### 4. 停止和更新
 
 ```powershell
 docker compose down
@@ -97,7 +104,9 @@ ALLOW_DYNAMIC_UPSTREAM=true
 
 ## Docker 后台监控
 
-网页轮询只在页面打开时运行。Docker 后台轮询由 `.env` 控制：
+Docker 页面会自动把启用的店铺、重点监控商品和轮询间隔同步到 `/data/monitor-config.json`。同步成功后关闭页面，容器仍会继续检查库存。删除店铺或关闭重点监控时，后台规则也会随之删除。
+
+`MONITOR_ENABLED` 只用于启用手动写在 `.env` 中的兼容规则；网页同步规则不依赖此开关。需要额外添加环境变量规则时使用：
 
 ```dotenv
 MONITOR_ENABLED=true
@@ -106,6 +115,7 @@ MONITOR_TOKEN=DEMO001
 MONITOR_PRODUCT_KEY=demo-basic
 MONITOR_PRODUCT_NAME=示例商品：云服务基础版
 MONITOR_STATE_FILE=/data/monitor-state.json
+MONITOR_CONFIG_FILE=/data/monitor-config.json
 ```
 
 多条规则使用一行 JSON：
@@ -114,7 +124,7 @@ MONITOR_STATE_FILE=/data/monitor-state.json
 MONITOR_RULES_JSON=[{"token":"DEMO001","productKey":"demo-basic","productName":"示例商品：云服务基础版"},{"token":"DEMO002","productKey":"demo-pro","productName":"示例商品：云服务专业版"}]
 ```
 
-库存从非零变为 0 或从 0 恢复时才会通知。
+后台首次检查只建立库存基线，不立即通知。之后库存从非零变为 0，或在启用恢复通知时从 0 恢复，才会发送消息。Docker 模式下库存事件由后台统一投递，避免页面轮询与后台重复通知。
 
 ## 通知渠道
 

@@ -9,6 +9,8 @@ const port = 18788;
 const baseUrl = `http://127.0.0.1:${port}`;
 let server;
 const notificationConfigFile = resolve(tmpdir(), `stock-watch-notification-test-${process.pid}.json`);
+const monitorConfigFile = resolve(tmpdir(), `stock-watch-monitor-config-test-${process.pid}.json`);
+const monitorStateFile = resolve(tmpdir(), `stock-watch-monitor-state-test-${process.pid}.json`);
 
 before(async () => {
   server = spawn(process.execPath, ["server.mjs"], {
@@ -30,7 +32,9 @@ before(async () => {
       DINGTALK_WEBHOOK: "",
       WECOM_WEBHOOK: "",
       ADMIN_TOKEN: "",
-      NOTIFICATION_CONFIG_FILE: notificationConfigFile
+      NOTIFICATION_CONFIG_FILE: notificationConfigFile,
+      MONITOR_CONFIG_FILE: monitorConfigFile,
+      MONITOR_STATE_FILE: monitorStateFile
     },
     stdio: "ignore"
   });
@@ -48,6 +52,8 @@ before(async () => {
 after(async () => {
   server?.kill();
   await unlink(notificationConfigFile).catch(() => {});
+  await unlink(monitorConfigFile).catch(() => {});
+  await unlink(monitorStateFile).catch(() => {});
 });
 
 test("serves the application shell", async () => {
@@ -77,6 +83,7 @@ test("reports notification configuration without exposing values", async () => {
   assert.deepEqual(await response.json(), {
     channels: { feishu: false, qq: false, telegram: false, dingtalk: false, wecom: false },
     webConfigSupported: true,
+    backgroundMonitorSupported: true,
     setupRequired: true,
     deploymentMode: "node"
   });
@@ -106,6 +113,63 @@ test("does not silently substitute demo data for an unapproved real shop", async
   assert.equal(response.status, 400);
   const payload = await response.json();
   assert.match(payload.error, /ALLOW_DYNAMIC_UPSTREAM/);
+});
+
+test("persists browser monitor rules without exposing their values", async () => {
+  const crossOriginResponse = await fetch(`${baseUrl}/api/monitor-config`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://untrusted.example" },
+    body: JSON.stringify({ interval: 5, rules: [] })
+  });
+  assert.equal(crossOriginResponse.status, 403);
+
+  const response = await fetch(`${baseUrl}/api/monitor-config`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      interval: 7,
+      rules: [{
+        id: "shop-demo001:demo-basic",
+        shopId: "shop-demo001",
+        shopName: "示例店铺",
+        shopUrl: "https://demo.example.com/shop/DEMO001",
+        token: "DEMO001",
+        productKey: "demo-basic",
+        productName: "示例商品：云服务基础版",
+        notifyRecovery: true
+      }]
+    })
+  });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.deepEqual(payload, {
+    saved: true,
+    backgroundMonitorSupported: true,
+    ruleCount: 1,
+    interval: 7,
+    updatedAt: payload.updatedAt
+  });
+  assert.equal(JSON.stringify(payload).includes("DEMO001"), false);
+
+  const storedConfig = JSON.parse(await readFile(monitorConfigFile, "utf8"));
+  assert.equal(storedConfig.rules.length, 1);
+  assert.equal(storedConfig.rules[0].token, "DEMO001");
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      const monitorState = JSON.parse(await readFile(monitorStateFile, "utf8"));
+      if (monitorState.rules?.["shop-demo001:demo-basic"]?.stock === 0) break;
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  const monitorState = JSON.parse(await readFile(monitorStateFile, "utf8"));
+  assert.equal(monitorState.rules["shop-demo001:demo-basic"].stock, 0);
+
+  const statusResponse = await fetch(`${baseUrl}/api/monitor-config`);
+  assert.equal(statusResponse.status, 200);
+  const statusPayload = await statusResponse.json();
+  assert.equal(statusPayload.ruleCount, 1);
+  assert.equal(JSON.stringify(statusPayload).includes("DEMO001"), false);
 });
 
 test("sets up protected web configuration without returning secrets", async () => {

@@ -15,6 +15,7 @@ const allowDynamicUpstream = process.env.ALLOW_DYNAMIC_UPSTREAM === "true";
 const defaultProxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || "";
 const defaultDispatcher = createDispatcher(defaultProxy);
 const monitorStateFile = process.env.MONITOR_STATE_FILE || "/data/monitor-state.json";
+const monitorConfigFile = process.env.MONITOR_CONFIG_FILE || "/data/monitor-config.json";
 const notificationConfigFile = process.env.NOTIFICATION_CONFIG_FILE || "/data/notification-config.json";
 const publicFiles = new Set(["index.html", "styles.css", "state-store.js", "app.js"]);
 const notificationFields = {
@@ -24,6 +25,8 @@ const notificationFields = {
   dingtalk: ["DINGTALK_WEBHOOK"],
   wecom: ["WECOM_WEBHOOK"]
 };
+let backgroundMonitorTimer;
+let backgroundMonitorRunning = false;
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -52,6 +55,12 @@ function createDispatcher(proxyUrl) {
 function dispatcherFor(request) {
   if (process.env.ALLOW_CLIENT_PROXY !== "true") return defaultDispatcher;
   return createDispatcher(request.headers["x-proxy-url"] || "") || defaultDispatcher;
+}
+
+function requestIsSameOrigin(request) {
+  const origin = request.headers.origin;
+  if (!origin) return true;
+  try { return new URL(origin).host === request.headers.host; } catch { return false; }
 }
 
 function sendJson(response, data, status = 200) {
@@ -227,6 +236,7 @@ async function notificationStatus() {
       wecom: Boolean(settings.WECOM_WEBHOOK)
     },
     webConfigSupported: true,
+    backgroundMonitorSupported: true,
     setupRequired: !isAdminConfigured(config),
     deploymentMode: process.env.DEPLOYMENT_MODE || "node"
   };
@@ -280,6 +290,83 @@ async function handleNotify(request, response) {
   }
 }
 
+function normalizeMonitorInterval(value) {
+  const minutes = Number(value);
+  return Number.isFinite(minutes) ? Math.min(1440, Math.max(1, Math.round(minutes))) : 5;
+}
+
+async function readMonitorConfig() {
+  try {
+    const config = JSON.parse(await readFile(monitorConfigFile, "utf8"));
+    return {
+      interval: normalizeMonitorInterval(config.interval),
+      rules: Array.isArray(config.rules) ? config.rules : [],
+      updatedAt: config.updatedAt || null
+    };
+  } catch {
+    return { interval: normalizeMonitorInterval(process.env.MONITOR_INTERVAL_MINUTES || 5), rules: [], updatedAt: null };
+  }
+}
+
+async function writeMonitorConfig(config) {
+  await mkdir(resolve(monitorConfigFile, ".."), { recursive: true });
+  await writeFile(monitorConfigFile, JSON.stringify(config, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
+function normalizeMonitorRule(rule, index) {
+  if (!rule || typeof rule !== "object") throw new Error(`第 ${index + 1} 条监控规则无效`);
+  const token = String(rule.token || "").trim();
+  const shopUrl = String(rule.shopUrl || "").trim();
+  const shopId = String(rule.shopId || "").trim().slice(0, 200);
+  const shopName = String(rule.shopName || "店铺").trim().slice(0, 300) || "店铺";
+  const productKey = String(rule.productKey || "").trim().slice(0, 300);
+  const productName = String(rule.productName || "").trim().slice(0, 500);
+  if (!token || !/^[A-Za-z0-9]+$/.test(token)) throw new Error(`第 ${index + 1} 条规则缺少有效店铺标识`);
+  if (!productKey && !productName) throw new Error(`第 ${index + 1} 条规则缺少商品标识`);
+  if (shopUrl.length > 2048) throw new Error(`第 ${index + 1} 条规则的店铺链接过长`);
+  stockSource(shopUrl, token);
+  return {
+    id: String(rule.id || `${shopId || "shop"}:${productKey || productName}`).slice(0, 600),
+    shopId,
+    shopName,
+    shopUrl,
+    token,
+    productKey,
+    productName,
+    notifyRecovery: rule.notifyRecovery !== false
+  };
+}
+
+function normalizeMonitorRules(rules) {
+  if (!Array.isArray(rules)) throw new Error("监控规则必须是数组");
+  if (rules.length > 500) throw new Error("监控规则不能超过 500 条");
+  const normalized = rules.map(normalizeMonitorRule);
+  return [...new Map(normalized.map(rule => [rule.id, rule])).values()];
+}
+
+async function monitorConfigStatus() {
+  const config = await readMonitorConfig();
+  return { backgroundMonitorSupported: true, ruleCount: config.rules.length, interval: config.interval, updatedAt: config.updatedAt };
+}
+
+async function handleMonitorConfig(request, response) {
+  if (!requestIsSameOrigin(request)) return sendJson(response, { error: "仅允许同源页面更新后台监控" }, 403);
+  try {
+    const body = await readJson(request);
+    const config = {
+      interval: normalizeMonitorInterval(body.interval),
+      rules: normalizeMonitorRules(body.rules),
+      updatedAt: new Date().toISOString()
+    };
+    await writeMonitorConfig(config);
+    scheduleBackgroundMonitor(config.interval);
+    void runBackgroundMonitor();
+    return sendJson(response, { saved: true, ...(await monitorConfigStatus()) });
+  } catch (error) {
+    return sendJson(response, { error: error.message || "后台监控配置保存失败" }, 400);
+  }
+}
+
 async function serveStatic(response, pathname) {
   let relativePath;
   try {
@@ -309,6 +396,8 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && url.pathname === "/api/notify") return sendJson(response, await notificationStatus());
   if (request.method === "POST" && url.pathname === "/api/notify") return handleNotify(request, response);
   if (request.method === "POST" && url.pathname === "/api/notification-config") return handleNotificationConfig(request, response);
+  if (request.method === "GET" && url.pathname === "/api/monitor-config") return sendJson(response, await monitorConfigStatus());
+  if (request.method === "POST" && url.pathname === "/api/monitor-config") return handleMonitorConfig(request, response);
   if (request.method === "GET" || request.method === "HEAD") return serveStatic(response, url.pathname);
   return sendJson(response, { error: "方法不支持" }, 405);
 });
@@ -322,7 +411,7 @@ async function writeMonitorState(value) {
   await writeFile(monitorStateFile, JSON.stringify(value, null, 2), "utf8");
 }
 
-function monitorRules() {
+function environmentMonitorRules() {
   if (process.env.MONITOR_RULES_JSON) {
     try {
       const rules = JSON.parse(process.env.MONITOR_RULES_JSON);
@@ -337,46 +426,73 @@ function monitorRules() {
   return [];
 }
 
+async function monitorRules() {
+  const config = await readMonitorConfig();
+  const rules = [...config.rules];
+  if (process.env.MONITOR_ENABLED === "true") rules.push(...environmentMonitorRules());
+  const uniqueRules = new Map();
+  for (const rule of rules) {
+    const key = `${rule.token}:${rule.productKey || rule.productName}`;
+    if (!uniqueRules.has(key)) uniqueRules.set(key, rule);
+  }
+  return [...uniqueRules.values()];
+}
+
 async function runBackgroundMonitor() {
-  const rules = monitorRules();
-  if (!rules.length) return;
+  if (backgroundMonitorRunning) return;
+  backgroundMonitorRunning = true;
   try {
+    const rules = await monitorRules();
     const previous = await readMonitorState();
     const next = { rules: {}, checkedAt: new Date().toISOString() };
     const shopCache = new Map();
-    for (const rule of rules) {
-      let data = shopCache.get(rule.token);
-      if (!data) {
-        data = await fetchStockData(rule.token, defaultDispatcher);
-        shopCache.set(rule.token, data);
+    for (const [index, rule] of rules.entries()) {
+      try {
+        const source = stockSource(rule.shopUrl || "", rule.token);
+        const cacheKey = `${source.demo ? "demo" : source.upstream}:${rule.token}`;
+        let data = shopCache.get(cacheKey);
+        if (!data) {
+          data = await fetchStockData(rule.token, defaultDispatcher, source);
+          shopCache.set(cacheKey, data);
+        }
+        const product = data.products.find(item => item.id === rule.productKey) || data.products.find(item => rule.productName && item.name.includes(rule.productName));
+        if (!product) { console.error(`[后台监控] 第 ${index + 1} 条规则未找到商品`); continue; }
+        const key = rule.id || `${rule.token}:${product.id}`;
+        const oldStock = previous.rules?.[key]?.stock ?? (rules.length === 1 ? previous.stock : undefined);
+        const changed = Number.isFinite(oldStock) && oldStock !== product.stock;
+        const shouldNotify = product.stock === 0 || (oldStock === 0 && rule.notifyRecovery !== false);
+        if (changed && shouldNotify) {
+          const status = product.stock === 0 ? "库存为 0" : `库存恢复至 ${product.stock}`;
+          await notifyAll(`${rule.shopName || data.shop.name}：${product.name}，${status}`, defaultDispatcher);
+          console.log(`[后台监控] 检测到库存状态变化并完成通知投递`);
+        }
+        next.rules[key] = { productKey: product.id, stock: product.stock };
+      } catch (error) {
+        console.error(`[后台监控] 第 ${index + 1} 条规则检查失败：${error.message}`);
       }
-      const product = data.products.find(item => item.id === rule.productKey) || data.products.find(item => rule.productName && item.name.includes(rule.productName));
-      if (!product) { console.error(`[后台监控] ${rule.token} 未找到商品：${rule.productKey || rule.productName}`); continue; }
-      const key = `${rule.token}:${product.id}`;
-      const oldStock = previous.rules?.[key]?.stock ?? (rules.length === 1 ? previous.stock : undefined);
-      const changed = Number.isFinite(oldStock) && oldStock !== product.stock;
-      if (changed && (oldStock === 0 || product.stock === 0)) {
-        const status = product.stock === 0 ? "库存为 0" : `库存恢复至 ${product.stock}`;
-        await notifyAll(`${data.shop.name}：${product.name}，${status}`, defaultDispatcher);
-        console.log(`[后台监控] ${product.name}：${status}`);
-      }
-      next.rules[key] = { token: rule.token, productKey: product.id, productName: product.name, stock: product.stock };
     }
     await writeMonitorState(next);
   } catch (error) {
     console.error(`[后台监控] 检查失败：${error.message}`);
+  } finally {
+    backgroundMonitorRunning = false;
   }
 }
 
-server.listen(port, host, () => {
+function scheduleBackgroundMonitor(interval) {
+  const minutes = normalizeMonitorInterval(interval);
+  if (backgroundMonitorTimer) clearInterval(backgroundMonitorTimer);
+  backgroundMonitorTimer = setInterval(runBackgroundMonitor, minutes * 60 * 1000);
+  backgroundMonitorTimer.unref();
+  return minutes;
+}
+
+server.listen(port, host, async () => {
   console.log(`货架雷达已启动：http://${host}:${port}`);
-  if (process.env.MONITOR_ENABLED === "true") {
-    const requestedMinutes = Number(process.env.MONITOR_INTERVAL_MINUTES || 5);
-    const minutes = Number.isFinite(requestedMinutes) ? Math.max(1, requestedMinutes) : 5;
-    runBackgroundMonitor();
-    setInterval(runBackgroundMonitor, minutes * 60 * 1000).unref();
-    console.log(`[后台监控] 已启用，每 ${minutes} 分钟检查一次`);
-  }
+  const config = await readMonitorConfig();
+  const minutes = scheduleBackgroundMonitor(config.interval || process.env.MONITOR_INTERVAL_MINUTES);
+  void runBackgroundMonitor();
+  console.log(`[后台监控] 已就绪，每 ${minutes} 分钟检查一次；网页同步规则自动生效`);
 });
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
 process.on("SIGINT", () => server.close(() => process.exit(0)));
