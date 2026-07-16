@@ -11,9 +11,9 @@
 | 方案 | 适用场景 | 网页关闭后轮询 | 通知配置 |
 | --- | --- | --- | --- |
 | Docker | VPS、NAS、Docker Desktop | 支持 | 可在网页填写 |
-| Cloudflare Pages | 无服务器静态控制台 | 不支持 | 使用项目 Secrets |
+| Cloudflare Worker + D1 | 静态控制台、API 和定时任务 | 支持 | 使用 Worker Secrets |
 
-需要 7×24 小时监控时使用 Docker。
+需要传统 HTTP/SOCKS 代理、本地文件持久化或不使用 Cloudflare 时使用 Docker。
 
 ## Docker 部署
 
@@ -136,7 +136,7 @@ Docker 版进入“通知渠道”，点击“配置”即可填写飞书、QQ�
 - 管理口令只保存带盐哈希。
 - `data/` 已被 Git 忽略。
 
-Cloudflare Pages 版需在项目的 Variables and Secrets 中按需添加：
+Cloudflare Worker 版需在 Worker 的 Variables and Secrets 中按需添加：
 
 - `FEISHU_WEBHOOK`
 - `QQ_WEBHOOK`
@@ -159,20 +159,32 @@ ALLOW_CLIENT_PROXY=false
 
 生产环境建议保持 `ALLOW_CLIENT_PROXY=false`。当前 Docker 服务仅支持 HTTP/HTTPS 代理。
 
-## Cloudflare Pages
+## Cloudflare Worker + D1
 
 ```powershell
 npx wrangler login
-npx wrangler pages deploy . --project-name stock-watch-monitor
+npx wrangler d1 create stock-watch-monitor
 ```
 
-在 Cloudflare 项目变量中保持模拟模式：
+将创建命令返回的数据库 ID 写入 `wrangler.toml` 里已提供的 D1 配置，并取消该配置的注释。然后执行：
+
+```powershell
+npx wrangler d1 migrations apply stock-watch-monitor --remote
+npx wrangler secret put ADMIN_TOKEN
+npx wrangler deploy
+```
+
+在 Worker 的 **Settings → Variables and Secrets** 中保持模拟模式：
 
 ```text
 DEMO_MODE=true
 ```
 
-如需接入自有上游，将 `DEMO_MODE` 设为 `false`，并把 `UPSTREAM_BASE_URL` 作为变量配置。页面顶部会显示“Cloudflare 版”。
+如需接入自有上游，将 `DEMO_MODE` 设为 `false`，并把 `UPSTREAM_BASE_URL` 作为变量配置。页面顶部会显示“Worker 版”。
+
+Worker 的 `DB` 是 D1 数据库绑定，不是 Secret。`ADMIN_TOKEN`、`FEISHU_WEBHOOK`、`QQ_WEBHOOK`、`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`、`DINGTALK_WEBHOOK` 与 `WECOM_WEBHOOK` 必须创建为 Secret。`ADMIN_TOKEN` 用于网页保存 D1 监控规则和发送测试通知；在系统设置中填写后只保留在当前页面会话。
+
+`wrangler.toml` 已配置每 5 分钟执行一次 Cron Trigger。Worker 会按网页保存的 5/10/15/30/60 分钟间隔从 D1 读取规则并保存库存基线，因此关闭页面后仍会运行；第一次检查不会通知，之后仅在缺货或恢复时发送通知。生产环境应关闭 `ALLOW_DYNAMIC_UPSTREAM`，或使用 Cloudflare Access 保护管理页面。
 
 ## 页面使用
 
@@ -202,5 +214,5 @@ git check-ignore .env data/ node_modules/ .wrangler/
 
 - 页面显示“静态预览”：当前没有可用的服务端 API。
 - 店铺接口不可用：检查 `DEMO_MODE`、`UPSTREAM_BASE_URL`、DNS 和代理。
-- 网页关闭后不轮询：使用 Docker 并开启 `MONITOR_ENABLED`。
+- Worker 后台监控未运行：检查 D1 绑定、数据库迁移、`ADMIN_TOKEN` 和 Cron Trigger；本地 Docker 则检查 `MONITOR_ENABLED`。
 - 删除店铺后仍看到旧动态：刷新页面以加载最新前端资源。

@@ -1,3 +1,18 @@
 name = "stock-watch-monitor"
 compatibility_date = "2026-07-14"
-pages_build_output_dir = "."
+main = "worker.mjs"
+
+# 创建 D1 数据库后，取消下面四行的注释，并填入 `npx wrangler d1 create`
+# 返回的 database_id。不要把通知 Webhook 或 Token 写在这里。
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "stock-watch-monitor"
+# database_id = "replace-with-your-d1-database-id"
+
+[assets]
+directory = "."
+binding = "ASSETS"
+run_worker_first = true
+
+[triggers]
+crons = ["*/5 * * * *"]
