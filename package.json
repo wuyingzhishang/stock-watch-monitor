@@ -2,9 +2,10 @@
   "name": "stock-watch-monitor",
   "private": true,
   "version": "0.1.0",
-  "description": "店铺库存监控台，支持 Cloudflare Worker 和 Docker 部署",
+  "description": "支持 Cloudflare Worker、Docker 和 Node 的店铺库存监控台",
   "scripts": {
     "start": "node server.mjs",
+    "start:node": "node server.mjs",
     "start:docker": "docker compose up -d --build",
     "dev": "npx wrangler dev",
     "deploy": "npx wrangler deploy",

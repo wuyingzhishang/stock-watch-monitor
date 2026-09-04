@@ -15,6 +15,7 @@ services:
       PORT: "8788"
       HOST: "0.0.0.0"
       DEPLOYMENT_MODE: "docker"
+      APP_STATE_FILE: "/data/app-state.json"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8788/healthz"]
       interval: 30s

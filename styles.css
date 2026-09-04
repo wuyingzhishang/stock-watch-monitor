@@ -7,3 +7,13 @@
 .runtime-badge{height:26px;display:inline-flex;align-items:center;padding:0 9px;border-radius:6px;background:#eef1f5;color:#536071;border:1px solid #e0e4eb;font-size:11px;font-weight:650;white-space:nowrap}.runtime-badge.docker{background:#eaf2ff;color:#2864c7;border-color:#d7e5ff}.runtime-badge.cloudflare{background:#fff2e4;color:#b65b0a;border-color:#ffe1bd}.runtime-badge.node{background:#e9f8ef;color:#237a46;border-color:#d2eedc}
 .content-grid>.panel{min-width:0}
 .github-link{height:26px;display:inline-flex;align-items:center;padding:0 9px;border-radius:6px;border:1px solid var(--line);background:#fff;color:#536071;font-size:11px;font-weight:650;text-decoration:none;white-space:nowrap}.github-link:hover{border-color:#b9c7e6;color:var(--blue);background:var(--blue-soft)}
+.event-item.read{opacity:.62}
+
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #c9d7ff;outline-offset:2px}
+.icon-button.is-loading{position:relative;color:transparent;pointer-events:none}
+.icon-button.is-loading:after{content:"";position:absolute;width:14px;height:14px;border:2px solid #d7dce6;border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.modal-backdrop.visible .modal{animation:modal-in .18s ease-out}
+@keyframes modal-in{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
+@media (max-width:760px){.topbar{height:auto;min-height:80px;padding:18px 0 14px;align-items:flex-start;flex-wrap:wrap;gap:13px}.topbar-actions{width:100%;gap:7px;overflow-x:auto;padding-bottom:2px}.topbar-actions .github-link{display:none}.topbar-actions .runtime-badge{flex-shrink:0}.topbar-actions .icon-button,.topbar-actions .primary-button{flex-shrink:0}}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}

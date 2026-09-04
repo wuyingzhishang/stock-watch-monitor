@@ -12,6 +12,9 @@ class FakeD1Statement {
   constructor(database, sql, values = []) { this.database = database; this.sql = sql; this.values = values; }
   bind(...values) { return new FakeD1Statement(this.database, this.sql, values); }
   async first() {
+    if (this.sql.startsWith("SELECT revision FROM app_config")) return this.database.appConfig ? { revision: this.database.appConfig.revision } : null;
+    if (this.sql.startsWith("SELECT schema_version, revision")) return this.database.appConfig;
+    if (this.sql.startsWith("SELECT interval_minutes, notify_recovery")) return this.database.appConfig;
     if (this.sql.startsWith("SELECT config_hash")) return this.database.config ? { config_hash: this.database.config.config_hash } : null;
     if (this.sql.startsWith("SELECT interval_minutes, updated_at")) return this.database.config;
     if (this.sql.startsWith("SELECT interval_minutes, ready_notified_at")) return this.database.config;
@@ -20,11 +23,44 @@ class FakeD1Statement {
     return null;
   }
   async all() {
+    if (this.sql.startsWith("SELECT shop_id, name, custom_name")) return { results: [...this.database.shops.values()].sort((a, b) => a.sort_order - b.sort_order) };
+    if (this.sql.startsWith("SELECT shop_id, product_key, name, category")) return { results: [...this.database.products.values()].sort((a, b) => a.sort_order - b.sort_order) };
+    if (this.sql.startsWith("SELECT shop_id, icon, tone")) return { results: [...this.database.activity] };
+    if (this.sql.startsWith("SELECT shop_id, product_key, product_name")) return { results: [...this.database.events] };
+    if (this.sql.startsWith("SELECT shop_id, channel, message")) return { results: [...this.database.notifications] };
     if (this.sql.startsWith("SELECT rule_id")) return { results: [...this.database.rules.values()] };
     return { results: [] };
   }
   async run() {
-    if (this.sql.startsWith("INSERT INTO monitor_config")) {
+    if (this.sql.startsWith("INSERT INTO app_config")) {
+      const [schema_version, revision, selected_shop_id, interval_minutes, keep_last_stock, notify_recovery, notify_only_monitored, updated_at] = this.values;
+      this.database.appConfig = { schema_version, revision, selected_shop_id, interval_minutes, keep_last_stock, notify_recovery, notify_only_monitored, updated_at };
+    } else if (this.sql === "DELETE FROM notification_log") {
+      this.database.notifications = [];
+    } else if (this.sql === "DELETE FROM inventory_events") {
+      this.database.events = [];
+    } else if (this.sql === "DELETE FROM activity") {
+      this.database.activity = [];
+    } else if (this.sql === "DELETE FROM products") {
+      this.database.products.clear();
+    } else if (this.sql === "DELETE FROM shops") {
+      this.database.shops.clear();
+    } else if (this.sql.startsWith("INSERT INTO shops")) {
+      const [shop_id, name, custom_name, url, shop_token, note, enabled, favorite, remote_name, categories_json, sort_order, last_checked_at, created_at, updated_at] = this.values;
+      this.database.shops.set(shop_id, { shop_id, name, custom_name, url, shop_token, note, enabled, favorite, remote_name, categories_json, sort_order, last_checked_at, created_at, updated_at });
+    } else if (this.sql.startsWith("INSERT INTO products")) {
+      const [shop_id, product_key, name, category, price, stock, monitored, favorite, sort_order, updated_at] = this.values;
+      this.database.products.set(`${shop_id}:${product_key}`, { shop_id, product_key, name, category, price, stock, monitored, favorite, sort_order, updated_at });
+    } else if (this.sql.startsWith("INSERT INTO activity")) {
+      const [shop_id, icon, tone, title, meta, created_at] = this.values;
+      this.database.activity.push({ shop_id, icon, tone, title, meta, created_at });
+    } else if (this.sql.startsWith("INSERT INTO inventory_events")) {
+      const [shop_id, product_key, product_name, message, tone, is_read, created_at] = this.values;
+      this.database.events.push({ shop_id, product_key, product_name, message, tone, is_read, created_at });
+    } else if (this.sql.startsWith("INSERT INTO notification_log")) {
+      const [shop_id, channel, message, success, status_code, created_at] = this.values;
+      this.database.notifications.push({ shop_id, channel, message, success, status_code, created_at });
+    } else if (this.sql.startsWith("INSERT INTO monitor_config")) {
       const [interval_minutes, updated_at, config_hash] = this.values;
       const prior = this.database.config;
       const unchanged = prior?.config_hash === config_hash;
@@ -58,7 +94,17 @@ class FakeD1Statement {
 }
 
 class FakeD1 {
-  constructor() { this.config = null; this.rules = new Map(); this.states = new Map(); }
+  constructor() {
+    this.config = null;
+    this.appConfig = null;
+    this.rules = new Map();
+    this.states = new Map();
+    this.shops = new Map();
+    this.products = new Map();
+    this.activity = [];
+    this.events = [];
+    this.notifications = [];
+  }
   prepare(sql) { return new FakeD1Statement(this, sql); }
   async batch(statements) {
     const results = [];
@@ -79,6 +125,87 @@ test("Worker serves only whitelisted static assets and the demo stock API", asyn
   const stock = await worker.fetch(new Request("https://monitor.example/api/stock?token=DEMO001"), env);
   assert.equal(stock.status, 200);
   assert.equal((await stock.json()).products.length, 5);
+});
+
+test("Worker returns the D1-backed default state before first save", async () => {
+  const database = new FakeD1();
+  const response = await worker.fetch(new Request("https://monitor.example/api/app-state", {
+    headers: { "x-admin-token": "admin-secret" }
+  }), { ASSETS: assets(), DB: database, ADMIN_TOKEN: "admin-secret" });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.initialized, false);
+  assert.equal(payload.revision, 0);
+  assert.equal(payload.state.schemaVersion, 4);
+  assert.equal(payload.state.shops[0].id, "shop-demo001");
+});
+
+test("Worker saves all application state to D1 and rejects stale revisions", async () => {
+  const database = new FakeD1();
+  const env = { ASSETS: assets(), DB: database, ADMIN_TOKEN: "admin-secret", DEMO_MODE: "true" };
+  const state = {
+    schemaVersion: 4,
+    shops: [{
+      id: "shop-demo001",
+      name: "我的演示店铺",
+      customName: true,
+      url: "https://demo.example.com/shop/DEMO001",
+      token: "DEMO001",
+      note: "D1 测试",
+      enabled: true,
+      favorite: true,
+      lastChecked: 1_700_000_000_000,
+      categories: ["订阅服务"],
+      products: [{ id: "demo-pro", name: "示例商品", category: "订阅服务", price: 49.9, stock: 18, monitored: false, favorite: true }]
+    }],
+    selectedShopId: "shop-demo001",
+    interval: 10,
+    keepLastStock: true,
+    notifyRecovery: true,
+    notifyOnlyMonitored: true,
+    activity: [{ shopId: "shop-demo001", icon: "!", tone: "red", title: "测试动态", meta: "D1", createdAt: "2026-08-04T00:00:00.000Z" }],
+    events: [{ shopId: "shop-demo001", productKey: "demo-pro", product: "示例商品", text: "库存变化", tone: "green", read: false, createdAt: "2026-08-04T00:00:00.000Z" }],
+    notificationLog: [{ shopId: "shop-demo001", channel: "telegram", text: "投递成功", success: true, statusCode: 200, createdAt: "2026-08-04T00:00:00.000Z" }]
+  };
+  const saveRequest = revision => new Request("https://monitor.example/api/app-state", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://monitor.example", "x-admin-token": "admin-secret" },
+    body: JSON.stringify({ revision, state })
+  });
+
+  const saved = await worker.fetch(saveRequest(0), env, { waitUntil() {} });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).revision, 1);
+
+  const loaded = await worker.fetch(new Request("https://monitor.example/api/app-state", {
+    headers: { "x-admin-token": "admin-secret" }
+  }), env);
+  const payload = await loaded.json();
+  assert.equal(payload.initialized, true);
+  assert.equal(payload.state.shops[0].name, "我的演示店铺");
+  assert.equal(payload.state.shops[0].products[0].favorite, true);
+  assert.equal(payload.state.events[0].text, "库存变化");
+  assert.equal(payload.state.notificationLog[0].channel, "telegram");
+
+  const stale = await worker.fetch(saveRequest(0), env, { waitUntil() {} });
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).conflict, true);
+});
+
+test("Worker requires the admin secret for D1 application state reads and writes", async () => {
+  const database = new FakeD1();
+  const readResponse = await worker.fetch(
+    new Request("https://monitor.example/api/app-state"),
+    { ASSETS: assets(), DB: database, ADMIN_TOKEN: "admin-secret" }
+  );
+  assert.equal(readResponse.status, 401);
+
+  const response = await worker.fetch(new Request("https://monitor.example/api/app-state", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://monitor.example" },
+    body: JSON.stringify({ revision: 0, state: {} })
+  }), { ASSETS: assets(), DB: database, ADMIN_TOKEN: "admin-secret" });
+  assert.equal(response.status, 401);
 });
 
 test("Worker does not accept D1 rule updates without a configured database and admin secret", async () => {

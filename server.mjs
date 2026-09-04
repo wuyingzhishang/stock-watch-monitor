@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
@@ -7,6 +7,19 @@ import { isIP } from "node:net";
 import { fetch, ProxyAgent } from "undici";
 
 const root = resolve(fileURLToPath(new URL(".", import.meta.url)));
+
+try {
+  const contents = await readFile(resolve(root, ".env"), "utf8");
+  for (const line of contents.split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (!match || Object.hasOwn(process.env, match[1])) continue;
+    const value = match[2].replace(/^(['"])(.*)\1$/, "$2");
+    process.env[match[1]] = value;
+  }
+} catch (error) {
+  if (error?.code !== "ENOENT") console.warn(`无法读取 .env：${error.message}`);
+}
+
 const port = Number(process.env.PORT || 8788);
 const host = process.env.HOST || "0.0.0.0";
 const upstream = String(process.env.UPSTREAM_BASE_URL || "").replace(/\/+$/, "");
@@ -17,7 +30,8 @@ const defaultDispatcher = createDispatcher(defaultProxy);
 const monitorStateFile = process.env.MONITOR_STATE_FILE || "/data/monitor-state.json";
 const monitorConfigFile = process.env.MONITOR_CONFIG_FILE || "/data/monitor-config.json";
 const notificationConfigFile = process.env.NOTIFICATION_CONFIG_FILE || "/data/notification-config.json";
-const publicFiles = new Set(["index.html", "styles.css", "state-store.js", "app.js"]);
+const appStateFile = process.env.APP_STATE_FILE || "/data/app-state.json";
+const publicFiles = new Set(["index.html", "styles.css", "app.js"]);
 const notificationFields = {
   feishu: ["FEISHU_WEBHOOK"],
   qq: ["QQ_WEBHOOK"],
@@ -27,6 +41,7 @@ const notificationFields = {
 };
 let backgroundMonitorTimer;
 let backgroundMonitorRunning = false;
+let appStateWriteQueue = Promise.resolve();
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -64,7 +79,7 @@ function requestIsSameOrigin(request) {
 }
 
 function sendJson(response, data, status = 200) {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "*", "access-control-allow-headers": "content-type, x-proxy-url" });
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "*", "access-control-allow-headers": "content-type, x-proxy-url, x-admin-token" });
   response.end(JSON.stringify(data));
 }
 
@@ -115,12 +130,12 @@ function validWebhook(value) {
   try { return /^https?:$/.test(new URL(value).protocol); } catch { return false; }
 }
 
-async function readJson(request) {
+async function readJson(request, maxBytes = 64 * 1024) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 64 * 1024) throw new Error("请求体过大");
+    if (size > maxBytes) throw new Error("请求体过大");
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
@@ -189,7 +204,168 @@ async function fetchStockData(token, dispatcher, source = { demo: demoMode || !u
   return { fetchedAt: Date.now(), shop: { name: shop.nickname, token: shop.token, link: shop.link, description: shop.description }, categories: (categories || []).map(item => item.name), products };
 }
 
+function defaultAppState() {
+  const demo = demoStockData();
+  return {
+    schemaVersion: 4,
+    shops: [{
+      id: "shop-demo001",
+      name: demo.shop.name,
+      customName: true,
+      url: demo.shop.link,
+      token: demo.shop.token,
+      note: "开源演示数据",
+      enabled: true,
+      favorite: true,
+      lastChecked: Date.now(),
+      categories: demo.categories,
+      products: demo.products.map(product => ({ ...product, monitored: product.id === "demo-basic", favorite: ["demo-basic", "demo-license"].includes(product.id) }))
+    }],
+    selectedShopId: "shop-demo001",
+    interval: 5,
+    keepLastStock: true,
+    notifyRecovery: true,
+    notifyOnlyMonitored: true,
+    activity: [{ icon: "!", tone: "red", title: "示例商品：云服务基础版 库存为 0", meta: "示例店铺 · 当前状态", shopId: "shop-demo001", createdAt: new Date().toISOString() }],
+    events: [],
+    notificationLog: []
+  };
+}
+
+function cleanText(value, maxLength, fallback = "") {
+  const result = String(value ?? "").trim().slice(0, maxLength);
+  return result || fallback;
+}
+
+function normalizeAppState(input) {
+  if (!input || typeof input !== "object") throw new Error("应用状态格式无效");
+  if (!Array.isArray(input.shops) || input.shops.length > 50) throw new Error("店铺数据无效或超过 50 个");
+  let productCount = 0;
+  const shops = input.shops.map((shop, shopIndex) => {
+    const products = Array.isArray(shop.products) ? shop.products : [];
+    productCount += products.length;
+    if (productCount > 2000) throw new Error("商品总数不能超过 2000 个");
+    const id = cleanText(shop.id, 120, `shop-${shopIndex + 1}`);
+    return {
+      id,
+      name: cleanText(shop.name, 300, `店铺 ${shopIndex + 1}`),
+      customName: Boolean(shop.customName),
+      url: cleanText(shop.url, 2048),
+      token: cleanText(shop.token, 300),
+      note: cleanText(shop.note, 1000),
+      enabled: shop.enabled !== false,
+      favorite: Boolean(shop.favorite),
+      remoteName: cleanText(shop.remoteName, 300) || null,
+      lastChecked: Number.isFinite(Number(shop.lastChecked)) ? Number(shop.lastChecked) : null,
+      categories: Array.isArray(shop.categories) ? shop.categories.map(category => cleanText(category, 200)).filter(Boolean).slice(0, 200) : [],
+      products: products.map((product, productIndex) => ({
+        id: cleanText(product.id, 300, `product-${productIndex + 1}`),
+        name: cleanText(product.name, 500, `商品 ${productIndex + 1}`),
+        category: cleanText(product.category, 200, "未分类"),
+        price: Number.isFinite(Number(product.price)) ? Number(product.price) : 0,
+        stock: Number.isFinite(Number(product.stock)) ? Number(product.stock) : 0,
+        monitored: Boolean(product.monitored),
+        favorite: Boolean(product.favorite)
+      }))
+    };
+  });
+  const shopIds = new Set(shops.map(shop => shop.id));
+  const timeline = (items, mapper) => (Array.isArray(items) ? items : []).slice(0, 100).map(mapper);
+  return {
+    schemaVersion: 4,
+    shops,
+    selectedShopId: shopIds.has(input.selectedShopId) ? input.selectedShopId : (shops[0]?.id || null),
+    interval: normalizeMonitorInterval(input.interval),
+    keepLastStock: input.keepLastStock !== false,
+    notifyRecovery: input.notifyRecovery !== false,
+    notifyOnlyMonitored: input.notifyOnlyMonitored !== false,
+    activity: timeline(input.activity, item => ({ shopId: cleanText(item.shopId, 120) || null, icon: cleanText(item.icon, 20), tone: cleanText(item.tone, 20), title: cleanText(item.title, 500), meta: cleanText(item.meta, 1000), createdAt: cleanText(item.createdAt, 60, new Date().toISOString()) })),
+    events: timeline(input.events, item => ({ shopId: cleanText(item.shopId, 120) || null, productKey: cleanText(item.productKey, 300) || null, product: cleanText(item.product, 500), text: cleanText(item.text, 1000), tone: cleanText(item.tone, 20, "red"), read: Boolean(item.read), createdAt: cleanText(item.createdAt, 60, new Date().toISOString()) })),
+    notificationLog: timeline(input.notificationLog, item => ({ shopId: cleanText(item.shopId, 120) || null, channel: cleanText(item.channel, 50), text: cleanText(item.text, 1000), success: Boolean(item.success), statusCode: Number.isFinite(Number(item.statusCode)) ? Number(item.statusCode) : null, createdAt: cleanText(item.createdAt, 60, new Date().toISOString()) }))
+  };
+}
+
+async function readAppStateRecord() {
+  try {
+    const record = JSON.parse(await readFile(appStateFile, "utf8"));
+    return { initialized: true, revision: Number(record.revision || 0), updatedAt: record.updatedAt || null, state: normalizeAppState(record.state) };
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw new Error(`应用状态文件无效：${error.message}`);
+    return { initialized: false, revision: 0, updatedAt: null, state: defaultAppState() };
+  }
+}
+
+async function writeAppStateRecord(record) {
+  await mkdir(resolve(appStateFile, ".."), { recursive: true });
+  const temporaryFile = `${appStateFile}.${process.pid}.tmp`;
+  await writeFile(temporaryFile, JSON.stringify(record, null, 2), { encoding: "utf8", mode: 0o600 });
+  await rename(temporaryFile, appStateFile);
+}
+
+function withAppStateLock(task) {
+  const result = appStateWriteQueue.then(task, task);
+  appStateWriteQueue = result.catch(() => {});
+  return result;
+}
+
+async function appStateAuthorization(request, { allowSetup = false, allowUnconfigured = false } = {}) {
+  const config = await readNotificationConfig();
+  const token = String(request.headers["x-admin-token"] || "");
+  if (isAdminConfigured(config)) return authenticateAdmin(token, config) ? { ok: true, config } : { ok: false, status: 401, error: "管理口令无效" };
+  if (allowSetup) {
+    if (token.length < 8) return { ok: false, status: 400, error: "请设置至少 8 位管理口令" };
+    const salt = randomBytes(16).toString("hex");
+    config.admin = { salt, hash: tokenHash(token, salt).toString("hex") };
+    await writeNotificationConfig(config);
+    return { ok: true, config };
+  }
+  return allowUnconfigured ? { ok: true, config } : { ok: false, status: 503, error: "尚未设置管理口令" };
+}
+
+async function handleAppStateRead(request, response) {
+  const authorization = await appStateAuthorization(request, { allowUnconfigured: true });
+  if (!authorization.ok) return sendJson(response, { error: authorization.error }, authorization.status);
+  try { return sendJson(response, await readAppStateRecord()); }
+  catch (error) { return sendJson(response, { error: error.message || "服务端状态读取失败" }, 500); }
+}
+
+async function handleAppStateSave(request, response) {
+  if (!requestIsSameOrigin(request)) return sendJson(response, { error: "仅允许同源页面保存数据" }, 403);
+  try {
+    const body = await readJson(request, 2 * 1024 * 1024);
+    const result = await withAppStateLock(async () => {
+      const authorization = await appStateAuthorization(request, { allowSetup: true });
+      if (!authorization.ok) return { status: authorization.status, payload: { error: authorization.error } };
+      const current = await readAppStateRecord();
+      if (Number(body.revision || 0) !== current.revision) return { status: 409, payload: { error: "服务端数据已更新，请重新加载", conflict: true, revision: current.revision } };
+      const state = normalizeAppState(body.state);
+      const rules = normalizeMonitorRules(state.shops.filter(shop => shop.enabled).flatMap(shop => shop.products.filter(product => product.monitored).map(product => ({
+        id: `${shop.id}:${product.id}`,
+        shopId: shop.id,
+        shopName: shop.name,
+        shopUrl: shop.url,
+        token: shop.token,
+        productKey: product.id,
+        productName: product.name,
+        notifyRecovery: state.notifyRecovery
+      }))));
+      const updatedAt = new Date().toISOString();
+      const nextRevision = current.revision + 1;
+      await writeAppStateRecord({ revision: nextRevision, updatedAt, state });
+      await writeMonitorConfig({ interval: state.interval, rules, updatedAt });
+      scheduleBackgroundMonitor(state.interval);
+      if (rules.length) void runBackgroundMonitor();
+      return { status: 200, payload: { saved: true, revision: nextRevision, updatedAt, verificationQueued: rules.length > 0 } };
+    });
+    return sendJson(response, result.payload, result.status);
+  } catch (error) {
+    return sendJson(response, { error: error.message || "服务端状态保存失败" }, 400);
+  }
+}
+
 async function handleStock(request, response, url) {
+  const authorization = await appStateAuthorization(request, { allowUnconfigured: true });
+  if (!authorization.ok) return sendJson(response, { error: authorization.error }, authorization.status);
   const token = url.searchParams.get("token") || url.searchParams.get("shop");
   if (!token || !/^[A-Za-z0-9]+$/.test(token)) return sendJson(response, { error: "缺少有效的店铺 token" }, 400);
   const dispatcher = dispatcherFor(request);
@@ -279,6 +455,9 @@ async function handleNotificationConfig(request, response) {
 }
 
 async function handleNotify(request, response) {
+  if (!requestIsSameOrigin(request)) return sendJson(response, { error: "仅允许同源页面发送通知" }, 403);
+  const authorization = await appStateAuthorization(request);
+  if (!authorization.ok) return sendJson(response, { error: authorization.error }, authorization.status);
   try {
     const body = await readJson(request);
     const text = body.text || `库存事件：${body.product || "商品"}，当前库存 ${body.stock ?? 0}`;
@@ -351,6 +530,8 @@ async function monitorConfigStatus() {
 
 async function handleMonitorConfig(request, response) {
   if (!requestIsSameOrigin(request)) return sendJson(response, { error: "仅允许同源页面更新后台监控" }, 403);
+  const authorization = await appStateAuthorization(request);
+  if (!authorization.ok) return sendJson(response, { error: authorization.error }, authorization.status);
   try {
     const body = await readJson(request);
     const config = {
@@ -393,6 +574,8 @@ const server = createServer(async (request, response) => {
   if (request.method === "OPTIONS") return sendJson(response, {}, 204);
   if (request.method === "GET" && url.pathname === "/healthz") return sendJson(response, { ok: true, time: Date.now() });
   if (request.method === "GET" && url.pathname === "/api/stock") return handleStock(request, response, url);
+  if (request.method === "GET" && url.pathname === "/api/app-state") return handleAppStateRead(request, response);
+  if (request.method === "POST" && url.pathname === "/api/app-state") return handleAppStateSave(request, response);
   if (request.method === "GET" && url.pathname === "/api/notify") return sendJson(response, await notificationStatus());
   if (request.method === "POST" && url.pathname === "/api/notify") return handleNotify(request, response);
   if (request.method === "POST" && url.pathname === "/api/notification-config") return handleNotificationConfig(request, response);
@@ -446,6 +629,7 @@ async function runBackgroundMonitor() {
     const previous = await readMonitorState();
     const next = { rules: {}, checkedAt: new Date().toISOString() };
     const shopCache = new Map();
+    const observations = [];
     for (const [index, rule] of rules.entries()) {
       try {
         const source = stockSource(rule.shopUrl || "", rule.token);
@@ -461,17 +645,54 @@ async function runBackgroundMonitor() {
         const oldStock = previous.rules?.[key]?.stock ?? (rules.length === 1 ? previous.stock : undefined);
         const changed = Number.isFinite(oldStock) && oldStock !== product.stock;
         const shouldNotify = product.stock === 0 || (oldStock === 0 && rule.notifyRecovery !== false);
+        let notificationText = "";
+        let deliveries = [];
         if (changed && shouldNotify) {
           const status = product.stock === 0 ? "库存为 0" : `库存恢复至 ${product.stock}`;
-          await notifyAll(`${rule.shopName || data.shop.name}：${product.name}，${status}`, defaultDispatcher);
+          notificationText = `${rule.shopName || data.shop.name}：${product.name}，${status}`;
+          deliveries = await notifyAll(notificationText, defaultDispatcher);
           console.log(`[后台监控] 检测到库存状态变化并完成通知投递`);
         }
         next.rules[key] = { productKey: product.id, stock: product.stock };
+        observations.push({ rule, product, notificationText, deliveries });
       } catch (error) {
         console.error(`[后台监控] 第 ${index + 1} 条规则检查失败：${error.message}`);
       }
     }
     await writeMonitorState(next);
+    if (observations.length) {
+      await withAppStateLock(async () => {
+        const record = await readAppStateRecord();
+        if (!record.initialized) return;
+        const checkedAt = new Date().toISOString();
+        let changed = false;
+        for (const observation of observations) {
+          const shop = record.state.shops.find(item => item.id === observation.rule.shopId);
+          const product = shop?.products.find(item => item.id === observation.product.id);
+          if (!shop || !product) continue;
+          const priorStock = Number(product.stock);
+          product.name = observation.product.name;
+          product.category = observation.product.category;
+          product.price = observation.product.price;
+          product.stock = observation.product.stock;
+          shop.lastChecked = Date.now();
+          changed = true;
+          if (priorStock !== observation.product.stock && (priorStock === 0 || observation.product.stock === 0)) {
+            const status = observation.product.stock === 0 ? "库存为 0" : `库存恢复至 ${observation.product.stock}`;
+            record.state.events.unshift({ shopId: shop.id, productKey: product.id, product: product.name, text: status, tone: observation.product.stock === 0 ? "red" : "green", read: false, createdAt: checkedAt });
+            record.state.activity.unshift({ shopId: shop.id, icon: observation.product.stock === 0 ? "!" : "↻", tone: observation.product.stock === 0 ? "red" : "", title: `${product.name} ${status}`, meta: `${shop.name} · 服务端后台轮询`, createdAt: checkedAt });
+          }
+          for (const delivery of observation.deliveries) {
+            record.state.notificationLog.unshift({ shopId: shop.id, channel: delivery.channel, text: observation.notificationText, success: Boolean(delivery.ok), statusCode: delivery.status || null, createdAt: checkedAt });
+          }
+        }
+        if (!changed) return;
+        record.state.events = record.state.events.slice(0, 100);
+        record.state.activity = record.state.activity.slice(0, 100);
+        record.state.notificationLog = record.state.notificationLog.slice(0, 100);
+        await writeAppStateRecord({ revision: record.revision + 1, updatedAt: checkedAt, state: record.state });
+      });
+    }
   } catch (error) {
     console.error(`[后台监控] 检查失败：${error.message}`);
   } finally {
