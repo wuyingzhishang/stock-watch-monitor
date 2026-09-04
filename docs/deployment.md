@@ -186,6 +186,8 @@ Worker 的 `DB` 是 D1 数据库绑定，不是 Secret。`ADMIN_TOKEN`、`FEISHU
 
 `wrangler.toml` 已配置每 5 分钟执行一次 Cron Trigger。Worker 会按网页保存的 5/10/15/30/60 分钟间隔从 D1 读取规则并保存库存基线，因此关闭页面后仍会运行；第一次检查不会通知，之后仅在缺货或恢复时发送通知。生产环境应关闭 `ALLOW_DYNAMIC_UPSTREAM`，或使用 Cloudflare Access 保护管理页面。
 
+首次同步或规则发生变化时，Worker 会立即排队一次验证轮询。验证同时满足 D1 新迁移字段可读写、规则已保存、库存请求成功和目标商品匹配后，才会通过通知 Secret 发送一次“Worker 已就绪”消息。该消息证明当前配置已完成同步且真实轮询链路可用；配置不变时不会重复通知。部署本版本后必须执行最新的远程迁移。
+
 ## 页面使用
 
 - “添加店铺”支持形如 `https://demo.example.com/shop/DEMO001` 的链接。

@@ -105,7 +105,7 @@ function monitorRulesForServer() {
   })));
 }
 
-async function syncMonitorConfig() {
+async function syncMonitorConfig(showToast = false) {
   if (!notificationCapabilities.backgroundMonitorSupported) return false;
   try {
     const response = await fetch("./api/monitor-config", {
@@ -113,10 +113,13 @@ async function syncMonitorConfig() {
       headers: { "content-type": "application/json", "x-admin-token": sessionAdminToken },
       body: JSON.stringify({ interval: state.interval, rules: monitorRulesForServer() })
     });
-    if (!response.ok) throw new Error("后台监控规则同步失败");
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "后台监控规则同步失败");
+    if (showToast) toast(payload.verificationQueued ? "D1 同步完成，正在验证后台轮询…" : "D1 监控规则已同步");
     return true;
-  } catch {
-    console.warn("后台监控规则同步失败");
+  } catch (error) {
+    console.warn("后台监控规则同步失败", error);
+    if (showToast) toast(`D1 同步失败：${error.message || "请检查绑定、迁移和管理口令"}`);
     return false;
   }
 }
@@ -290,7 +293,7 @@ document.getElementById("testNotificationButton").addEventListener("click", test
 document.getElementById("channelConfigForm").addEventListener("submit", saveChannelConfig);
 document.getElementById("markAllRead").addEventListener("click", () => { state.events = state.events.map(event => ({ ...event, tone: "green" })); saveState(); renderEvents(); toast("事件已标记为已读"); });
 document.getElementById("addRuleButton").addEventListener("click", () => { switchView("shops"); toast("请在商品清单中开启重点监控"); });
-document.getElementById("saveSettingsButton").addEventListener("click", () => { const adminInput = document.getElementById("workerAdminToken"); if (adminInput?.value.trim()) sessionAdminToken = adminInput.value.trim(); state.proxyUrl = document.getElementById("proxyUrl").value.trim(); state.interval = Number(document.getElementById("settingsInterval").value); state.keepLastStock = document.getElementById("keepLastStock").checked; state.notifyRecovery = document.getElementById("notifyRecovery").checked; state.notifyOnlyMonitored = document.getElementById("notifyOnlyMonitored").checked; saveState(); renderAll(); scheduleRefresh(); toast("设置已保存"); });
+document.getElementById("saveSettingsButton").addEventListener("click", async () => { const adminInput = document.getElementById("workerAdminToken"); if (adminInput?.value.trim()) sessionAdminToken = adminInput.value.trim(); state.proxyUrl = document.getElementById("proxyUrl").value.trim(); state.interval = Number(document.getElementById("settingsInterval").value); state.keepLastStock = document.getElementById("keepLastStock").checked; state.notifyRecovery = document.getElementById("notifyRecovery").checked; state.notifyOnlyMonitored = document.getElementById("notifyOnlyMonitored").checked; saveState(); renderAll(); scheduleRefresh(); if (deploymentMode === "worker" && notificationCapabilities.backgroundMonitorSupported) { window.clearTimeout(monitorConfigSyncTimer); await syncMonitorConfig(true); } else { toast("设置已保存"); } });
 document.getElementById("exportConfig").addEventListener("click", () => { const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = "stock-watch-config.json"; anchor.click(); URL.revokeObjectURL(url); toast("配置已导出"); });
 document.getElementById("shopForm").addEventListener("submit", async event => { event.preventDefault(); const name = document.getElementById("shopName").value.trim(); const url = document.getElementById("shopUrl").value.trim(); const note = document.getElementById("shopNote").value.trim(); const tokenMatch = url.match(/\/shop\/([^/?#]+)/i); if (!tokenMatch) return toast("请输入有效的店铺链接"); const shop = { id: `shop-${Date.now()}`, name: name || `店铺 ${tokenMatch[1]}`, customName: Boolean(name), url, token: tokenMatch[1], note, enabled: true, favorite: false, lastChecked: Date.now(), categories: [], products: [] }; state.shops.push(shop); state.selectedShopId = shop.id; saveState(); closeModal("shopModal"); event.target.reset(); renderAll(); switchView("shops"); await refreshShop(shop); });
 

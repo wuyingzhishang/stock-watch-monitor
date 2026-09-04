@@ -127,6 +127,16 @@ function normalizeRules(rules) {
   return [...new Map(normalized.map(rule => [rule.id, rule])).values()];
 }
 
+function configFingerprint(interval, rules) {
+  const input = JSON.stringify({ interval, rules });
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 function tokensMatch(actual, expected) {
   const left = new TextEncoder().encode(String(actual || ""));
   const right = new TextEncoder().encode(String(expected || ""));
@@ -147,19 +157,24 @@ function isSameOrigin(request) {
 }
 
 async function monitorStatus(env) {
-  if (!env.DB) return { backgroundMonitorSupported: false, ruleCount: 0, interval: 5, updatedAt: null, databaseConfigured: false };
-  const config = await env.DB.prepare("SELECT interval_minutes, updated_at FROM monitor_config WHERE id = 1").first();
+  if (!env.DB) return { backgroundMonitorSupported: false, ruleCount: 0, interval: 5, updatedAt: null, databaseConfigured: false, migrationsApplied: false, lastRunAt: null, lastSuccessAt: null, lastSuccessCount: 0, readyNotifiedAt: null };
+  const config = await env.DB.prepare("SELECT interval_minutes, updated_at, last_run_at, last_success_at, last_success_count, ready_notified_at FROM monitor_config WHERE id = 1").first();
   const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM monitor_rules").first();
   return {
     backgroundMonitorSupported: true,
     ruleCount: Number(count?.count || 0),
     interval: normalizeInterval(config?.interval_minutes),
     updatedAt: config?.updated_at || null,
-    databaseConfigured: true
+    databaseConfigured: true,
+    migrationsApplied: true,
+    lastRunAt: config?.last_run_at || null,
+    lastSuccessAt: config?.last_success_at || null,
+    lastSuccessCount: Number(config?.last_success_count || 0),
+    readyNotifiedAt: config?.ready_notified_at || null
   };
 }
 
-async function saveMonitorConfig(request, env) {
+async function saveMonitorConfig(request, env, ctx) {
   if (!isSameOrigin(request)) return json({ error: "仅允许同源页面更新后台监控" }, 403);
   if (!env.DB) return json({ error: "未配置 D1 数据库绑定" }, 503);
   if (!env.ADMIN_TOKEN) return json({ error: "未配置 ADMIN_TOKEN Secret" }, 503);
@@ -169,15 +184,20 @@ async function saveMonitorConfig(request, env) {
     const rules = normalizeRules(body.rules);
     const interval = normalizeInterval(body.interval);
     const updatedAt = new Date().toISOString();
+    const fingerprint = configFingerprint(interval, rules);
+    const previous = await env.DB.prepare("SELECT config_hash FROM monitor_config WHERE id = 1").first();
+    const configurationChanged = previous?.config_hash !== fingerprint;
     const statements = [
-      env.DB.prepare("INSERT INTO monitor_config (id, interval_minutes, updated_at, last_run_at) VALUES (1, ?, ?, NULL) ON CONFLICT(id) DO UPDATE SET interval_minutes = excluded.interval_minutes, updated_at = excluded.updated_at, last_run_at = NULL").bind(interval, updatedAt),
+      env.DB.prepare("INSERT INTO monitor_config (id, interval_minutes, updated_at, last_run_at, config_hash, last_success_at, last_success_count, ready_notified_at) VALUES (1, ?, ?, NULL, ?, NULL, 0, NULL) ON CONFLICT(id) DO UPDATE SET interval_minutes = excluded.interval_minutes, updated_at = excluded.updated_at, last_run_at = CASE WHEN monitor_config.config_hash = excluded.config_hash THEN monitor_config.last_run_at ELSE NULL END, config_hash = excluded.config_hash, ready_notified_at = CASE WHEN monitor_config.config_hash = excluded.config_hash THEN monitor_config.ready_notified_at ELSE NULL END").bind(interval, updatedAt, fingerprint),
       env.DB.prepare("DELETE FROM monitor_rules")
     ];
     for (const rule of rules) {
       statements.push(env.DB.prepare("INSERT INTO monitor_rules (rule_id, shop_name, shop_url, shop_token, product_key, product_name, notify_recovery) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(rule.id, rule.shopName, rule.shopUrl, rule.token, rule.productKey, rule.productName, Number(rule.notifyRecovery)));
     }
     await env.DB.batch(statements);
-    return json({ saved: true, ...(await monitorStatus(env)) });
+    const verificationQueued = configurationChanged && rules.length > 0;
+    if (verificationQueued) ctx?.waitUntil(runMonitor(env, { force: true }));
+    return json({ saved: true, configurationChanged, verificationQueued, ...(await monitorStatus(env)) });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "后台监控配置保存失败" }, 400);
   }
@@ -232,20 +252,23 @@ async function handleNotify(request, env) {
   }
 }
 
-async function runMonitor(env) {
+async function runMonitor(env, { force = false } = {}) {
   if (!env.DB) return;
-  const config = await env.DB.prepare("SELECT interval_minutes FROM monitor_config WHERE id = 1").first();
+  const config = await env.DB.prepare("SELECT interval_minutes, ready_notified_at FROM monitor_config WHERE id = 1").first();
   if (!config) return;
   const now = new Date();
-  const dueBefore = new Date(now.getTime() - normalizeInterval(config.interval_minutes) * 60 * 1000).toISOString();
-  const claimed = await env.DB.prepare("UPDATE monitor_config SET last_run_at = ? WHERE id = 1 AND (last_run_at IS NULL OR last_run_at <= ?)").bind(now.toISOString(), dueBefore).run();
+  const claimed = force
+    ? await env.DB.prepare("UPDATE monitor_config SET last_run_at = ? WHERE id = 1").bind(now.toISOString()).run()
+    : await env.DB.prepare("UPDATE monitor_config SET last_run_at = ? WHERE id = 1 AND (last_run_at IS NULL OR last_run_at <= ?)").bind(now.toISOString(), new Date(now.getTime() - normalizeInterval(config.interval_minutes) * 60 * 1000).toISOString()).run();
   if (!Number(claimed.meta?.changes || 0)) return;
   const rules = await env.DB.prepare("SELECT rule_id, shop_name, shop_url, shop_token, product_key, product_name, notify_recovery FROM monitor_rules").all();
+  let successfulRules = 0;
   for (const rule of rules.results || []) {
     try {
       const data = await fetchStockData(rule.shop_token, rule.shop_url, env);
       const product = data.products.find(item => item.id === rule.product_key || item.name === rule.product_name);
       if (!product) continue;
+      successfulRules += 1;
       const previous = await env.DB.prepare("SELECT stock FROM monitor_state WHERE rule_id = ?").bind(rule.rule_id).first();
       const priorStock = previous ? Number(previous.stock) : null;
       const now = new Date().toISOString();
@@ -255,6 +278,14 @@ async function runMonitor(env) {
       await notifyAll(env, `${rule.shop_name}：${product.name}，${status}`);
     } catch (error) {
       console.error("[后台监控] 检查失败", rule.rule_id, error instanceof Error ? error.message : error);
+    }
+  }
+  if (successfulRules > 0) {
+    const completedAt = new Date().toISOString();
+    await env.DB.prepare("UPDATE monitor_config SET last_success_at = ?, last_success_count = ? WHERE id = 1").bind(completedAt, successfulRules).run();
+    if (!config.ready_notified_at) {
+      const readiness = await notifyAll(env, `货架雷达 Worker 已就绪：D1 数据库连接和迁移正常，已同步 ${(rules.results || []).length} 条监控规则，本次成功轮询 ${successfulRules} 条。`);
+      if (readiness.sent) await env.DB.prepare("UPDATE monitor_config SET ready_notified_at = ? WHERE id = 1").bind(completedAt).run();
     }
   }
 }
@@ -272,14 +303,14 @@ async function handleStock(url, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return json({}, 204);
     if (url.pathname === "/api/stock" && request.method === "GET") return handleStock(url, env);
     if (url.pathname === "/api/notify" && request.method === "GET") return json(notificationStatus(env));
     if (url.pathname === "/api/notify" && request.method === "POST") return handleNotify(request, env);
     if (url.pathname === "/api/monitor-config" && request.method === "GET") return json(await monitorStatus(env));
-    if (url.pathname === "/api/monitor-config" && request.method === "POST") return saveMonitorConfig(request, env);
+    if (url.pathname === "/api/monitor-config" && request.method === "POST") return saveMonitorConfig(request, env, ctx);
     if (url.pathname.startsWith("/api/")) return json({ error: "接口不存在" }, 404);
     if (!STATIC_PATHS.has(url.pathname)) return new Response("Not Found", { status: 404 });
     return env.ASSETS.fetch(request);
