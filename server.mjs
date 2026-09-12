@@ -27,6 +27,8 @@ const demoMode = process.env.DEMO_MODE !== "false";
 const allowDynamicUpstream = process.env.ALLOW_DYNAMIC_UPSTREAM === "true";
 const defaultProxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || "";
 const defaultDispatcher = createDispatcher(defaultProxy);
+const configuredUpstreamTimeoutMs = Number(process.env.UPSTREAM_TIMEOUT_MS || 15000);
+const upstreamTimeoutMs = Number.isFinite(configuredUpstreamTimeoutMs) ? Math.max(1000, configuredUpstreamTimeoutMs) : 15000;
 const monitorStateFile = process.env.MONITOR_STATE_FILE || "/data/monitor-state.json";
 const monitorConfigFile = process.env.MONITOR_CONFIG_FILE || "/data/monitor-config.json";
 const notificationConfigFile = process.env.NOTIFICATION_CONFIG_FILE || "/data/notification-config.json";
@@ -179,7 +181,8 @@ async function postJson(baseUrl, path, payload, dispatcher) {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/plain, */*", "user-agent": "Mozilla/5.0 (compatible; StockWatchMonitor/0.1)", referer: `${baseUrl}/` },
     body: JSON.stringify(payload),
-    dispatcher
+    dispatcher,
+    signal: AbortSignal.timeout(upstreamTimeoutMs)
   });
   if (!response.ok) throw new Error(`上游接口返回 ${response.status}`);
   const data = await response.json();
@@ -381,7 +384,7 @@ async function handleStock(request, response, url) {
 
 async function deliver(url, body, dispatcher) {
   try {
-    const result = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), dispatcher });
+    const result = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), dispatcher, signal: AbortSignal.timeout(upstreamTimeoutMs) });
     return { ok: result.ok, status: result.status };
   } catch (error) {
     return { ok: false, error: error.message || "投递失败" };

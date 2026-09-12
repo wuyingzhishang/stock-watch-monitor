@@ -17,3 +17,4 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 @keyframes modal-in{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
 @media (max-width:760px){.topbar{height:auto;min-height:80px;padding:18px 0 14px;align-items:flex-start;flex-wrap:wrap;gap:13px}.topbar-actions{width:100%;gap:7px;overflow-x:auto;padding-bottom:2px}.topbar-actions .github-link{display:none}.topbar-actions .runtime-badge{flex-shrink:0}.topbar-actions .icon-button,.topbar-actions .primary-button{flex-shrink:0}}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+.product-name,.rule-item h4{cursor:pointer}.product-name:hover,.rule-item h4:hover{color:var(--blue);text-decoration:underline;text-underline-offset:3px}

@@ -23,7 +23,18 @@
 
 ## 部署到 Cloudflare
 
-需要 Node.js 20 或更高版本、Cloudflare 账号和 D1 数据库。
+需要 Node.js 20 或更高版本和 Cloudflare 账号。D1 数据库可以由下方的一键脚本自动创建，也可以手动创建。
+
+### 一键自动部署
+
+项目提供自动化脚本，可自动完成 Wrangler 登录检查、D1 创建或复用、`DB` 绑定写入、远程迁移、Worker 发布和管理口令 Secret 设置：
+
+```powershell
+npm install
+npm run deploy:cloudflare:auto
+```
+
+脚本优先使用现有 Wrangler 登录状态；未登录时会自动打开浏览器。CI 或无浏览器环境可设置 `CLOUDFLARE_API_TOKEN` 后执行。首次未提供 `ADMIN_TOKEN` 时脚本会生成随机口令并只在终端显示一次。需要更换数据库名称时设置 `CLOUDFLARE_D1_NAME`。
 
 1. 安装依赖并登录。
 
@@ -38,7 +49,7 @@ npx wrangler login
 npx wrangler d1 create stock-watch-monitor
 ```
 
-3. 将命令返回的 Database ID 写入 `wrangler.toml`，并取消 D1 配置的注释。
+3. 将命令返回的 Database ID 写入 `wrangler.toml` 的 D1 绑定配置。
 
 ```toml
 [[d1_databases]]

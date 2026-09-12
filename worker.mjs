@@ -487,7 +487,7 @@ function notificationStatus(env) {
 
 async function deliver(channel, url, body) {
   try {
-    const result = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const result = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
     return { channel, ok: result.ok, status: result.status };
   } catch (error) {
     return { channel, ok: false, error: error instanceof Error ? error.message : "投递失败" };

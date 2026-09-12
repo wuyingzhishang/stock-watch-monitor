@@ -9,6 +9,7 @@
     "start:docker": "docker compose up -d --build",
     "dev": "npx wrangler dev",
     "deploy": "npx wrangler deploy",
+    "deploy:cloudflare:auto": "node scripts/deploy-cloudflare.mjs",
     "dev:pages": "npx wrangler pages dev .",
     "deploy:pages": "npx wrangler pages deploy .",
     "test": "node --test"

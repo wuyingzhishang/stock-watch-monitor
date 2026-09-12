@@ -2,12 +2,8 @@ name = "stock-watch-monitor"
 compatibility_date = "2026-07-14"
 main = "worker.mjs"
 
-# 创建 D1 数据库后，取消下面四行的注释，并填入 `npx wrangler d1 create`
-# 返回的 database_id。不要把通知 Webhook 或 Token 写在这里。
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "stock-watch-monitor"
-# database_id = "replace-with-your-d1-database-id"
+# 首次运行 `npm run deploy:cloudflare:auto` 会自动创建或复用 D1，
+# 写入下面的绑定并执行远程迁移。不要把通知 Webhook 或 Token 写在这里。
 
 [assets]
 directory = "."

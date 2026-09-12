@@ -318,6 +318,15 @@ function setRefreshBusy(busy) {
 }
 
 document.addEventListener("click", event => {
+  const productName = event.target.closest(".product-name, .rule-item h4");
+  if (productName) {
+    const control = productName.closest("tr, .rule-item")?.querySelector("[data-monitor]");
+    const result = control ? findProduct(control.dataset.monitor) : null;
+    if (result?.shop?.url) {
+      window.open(result.shop.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+  }
   if (event.target.classList.contains("modal-backdrop")) { closeModal(event.target.id); return; }
   const nav = event.target.closest("[data-view]"); if (nav) { switchView(nav.dataset.view); return; }
   const jump = event.target.closest("[data-view-jump]"); if (jump) { switchView(jump.dataset.viewJump); return; }
@@ -389,6 +398,16 @@ document.getElementById("saveSettingsButton").addEventListener("click", async ()
 document.getElementById("exportConfig").addEventListener("click", () => { const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = "stock-watch-config.json"; anchor.click(); URL.revokeObjectURL(url); toast("配置已导出"); });
 document.getElementById("shopForm").addEventListener("submit", async event => { event.preventDefault(); const name = document.getElementById("shopName").value.trim(); const url = document.getElementById("shopUrl").value.trim(); const note = document.getElementById("shopNote").value.trim(); let parsedUrl; try { parsedUrl = new URL(url); } catch { return toast("请输入有效的店铺链接"); } if (!["http:", "https:"].includes(parsedUrl.protocol)) return toast("店铺链接必须使用 http 或 https"); const tokenMatch = parsedUrl.pathname.match(/\/shop\/([^/?#]+)/i); if (!tokenMatch) return toast("店铺链接需包含 /shop/店铺标识"); const shop = { id: `shop-${Date.now()}`, name: name || `店铺 ${tokenMatch[1]}`, customName: Boolean(name), url: parsedUrl.href, token: tokenMatch[1], note, enabled: true, favorite: false, lastChecked: Date.now(), categories: [], products: [] }; state.shops.push(shop); state.selectedShopId = shop.id; saveState(); closeModal("shopModal"); event.target.reset(); renderAll(); switchView("shops"); await refreshShop(shop); });
 
+document.getElementById("shopForm").addEventListener("submit", event => {
+  const value = document.getElementById("shopUrl").value.trim();
+  try {
+    if (new URL(value).protocol !== "https:") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      toast("店铺链接必须使用 HTTPS");
+    }
+  } catch {}
+}, true);
 window.addEventListener("keydown", event => { if (event.key === "Escape") document.querySelectorAll(".modal-backdrop.visible").forEach(modal => closeModal(modal.id)); });
 async function initializeApp() {
   await loadCloudState();

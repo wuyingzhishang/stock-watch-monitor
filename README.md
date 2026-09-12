@@ -30,7 +30,7 @@
 需要 Node.js 20 或更高版本。首次使用时，在 PowerShell 中获取项目并进入项目目录：
 
 ```powershell
-git clone https://github.com/YuZangA/stock-watch-monitor.git
+git clone git@github.com:wuyingzhishang/stock-watch-monitor.git
 Set-Location -LiteralPath '.\stock-watch-monitor'
 npm install
 ```
@@ -40,6 +40,17 @@ npm install
 选择一种部署方式继续。直接双击 `index.html` 只能查看静态界面，不能保存业务数据或执行后台监控。
 
 ## Cloudflare Worker + D1：推荐
+
+### 一键自动部署
+
+如果本机已经安装 Node.js 20+，可以让脚本自动完成 D1 创建/复用、绑定写入、远程迁移、Worker 发布和 `ADMIN_TOKEN` Secret 设置，不需要手动打开 Cloudflare 控制台创建数据库：
+
+```powershell
+npm install
+npm run deploy:cloudflare:auto
+```
+
+脚本会优先使用已有的 Wrangler 登录状态；未登录时自动打开浏览器完成登录。也可以提前设置 `CLOUDFLARE_API_TOKEN` 使用无交互认证。首次未设置 `ADMIN_TOKEN` 时会自动生成管理口令并在终端显示一次，请立即保存。数据库名默认使用 `stock-watch-monitor`，可通过 `CLOUDFLARE_D1_NAME` 覆盖。
 
 不需要购买域名或服务器。免费 Cloudflare 账号即可开始。
 
@@ -65,9 +76,9 @@ npx wrangler login
 npx wrangler d1 create stock-watch-monitor
 ```
 
-### 第 2 步：把 D1 绑定到 Worker
+### 第 2 步：把 D1 绑定到 Worker（手动方式）
 
-在本地打开项目根目录的 `wrangler.toml`，找到已注释的 D1 配置。取消注释并填入刚才复制的 Database ID：
+不使用一键脚本时，在项目根目录的 `wrangler.toml` 末尾添加 D1 配置，并填入刚才复制的 Database ID：
 
 ```toml
 [[d1_databases]]
@@ -321,7 +332,7 @@ Cloudflare Pages 脚本保留用于静态演示。Pages 不提供 `/api/app-stat
 
 ## 免责声明与项目地址
 
-作者项目：[YuZangA/stock-watch-monitor](https://github.com/YuZangA/stock-watch-monitor)
+作者项目：[wuyingzhishang/stock-watch-monitor](https://github.com/wuyingzhishang/stock-watch-monitor)
 
 本项目仅供学习交流使用。请遵守相关法律法规和目标平台服务条款，只连接你有权访问的接口。
 
