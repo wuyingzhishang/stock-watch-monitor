@@ -8,7 +8,13 @@ const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const configPath = resolve(root, "wrangler.toml");
 const workerName = "stock-watch-monitor";
 const databaseName = process.env.CLOUDFLARE_D1_NAME || workerName;
+const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || "";
+const notificationSecretNames = ["FEISHU_WEBHOOK", "QQ_WEBHOOK", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "DINGTALK_WEBHOOK", "WECOM_WEBHOOK"];
 const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+
+function accountArgs() {
+  return accountId ? ["--account-id", accountId] : [];
+}
 
 function parseJsonOutput(output) {
   const text = String(output || "");
@@ -40,7 +46,7 @@ function databaseIdFrom(value) {
 }
 
 async function findOrCreateDatabase() {
-  const listed = await run(["d1", "list", "--json"], { json: true });
+  const listed = await run(["d1", "list", ...accountArgs(), "--json"], { json: true });
   const databases = Array.isArray(listed) ? listed : (listed.result || listed.databases || []);
   const existing = databases.find(item => item.name === databaseName);
   if (existing && databaseIdFrom(existing)) {
@@ -48,7 +54,7 @@ async function findOrCreateDatabase() {
     return databaseIdFrom(existing);
   }
   console.log(`创建 D1 数据库：${databaseName}`);
-  const created = await run(["d1", "create", databaseName, "--json"], { json: true });
+  const created = await run(["d1", "create", databaseName, ...accountArgs(), "--json"], { json: true });
   const id = databaseIdFrom(created);
   if (!id) throw new Error("D1 创建成功但未找到 database_id");
   return id;
@@ -69,26 +75,43 @@ async function configureBinding(databaseId) {
 }
 
 async function configureAdminSecret() {
+  if (process.env.GITHUB_ACTIONS === "true" && !process.env.ADMIN_TOKEN) {
+    throw new Error("GitHub Actions 必须配置 ADMIN_TOKEN Secret，避免将自动生成口令写入 CI 日志");
+  }
   const token = process.env.ADMIN_TOKEN || randomBytes(24).toString("base64url");
-  await run(["secret", "put", "ADMIN_TOKEN", "--config", "wrangler.toml"], { input: `${token}\n` });
+  await run(["secret", "put", "ADMIN_TOKEN", "--config", "wrangler.toml", ...accountArgs()], { input: `${token}\n` });
   if (!process.env.ADMIN_TOKEN) {
     console.log(`\n首次管理口令（仅显示一次）：${token}`);
     console.log("请立即保存此口令，用于打开监控面板和修改云端数据。\n");
   }
 }
 
+async function configureOptionalSecrets() {
+  for (const name of notificationSecretNames) {
+    const value = process.env[name];
+    if (!value) continue;
+    console.log(`同步 Secret：${name}`);
+    await run(["secret", "put", name, "--config", "wrangler.toml", ...accountArgs()], { input: `${value}\n` });
+  }
+}
+
 async function main() {
-  try {
+  if (process.env.CLOUDFLARE_API_TOKEN) {
     await run(["whoami"]);
-  } catch {
-    console.log("未检测到 Cloudflare 登录状态，正在打开浏览器登录……");
-    await run(["login"]);
+  } else {
+    try {
+      await run(["whoami"]);
+    } catch {
+      console.log("未检测到 Cloudflare 登录状态，正在打开浏览器登录……");
+      await run(["login"]);
+    }
   }
   const databaseId = await findOrCreateDatabase();
   await configureBinding(databaseId);
-  await run(["d1", "migrations", "apply", databaseName, "--remote", "--config", "wrangler.toml"]);
-  await run(["deploy", "--config", "wrangler.toml"]);
+  await run(["d1", "migrations", "apply", databaseName, "--remote", "--config", "wrangler.toml", ...accountArgs()]);
   await configureAdminSecret();
+  await configureOptionalSecrets();
+  await run(["deploy", "--config", "wrangler.toml", ...accountArgs()]);
   console.log(`\nCloudflare 部署完成：${workerName}`);
 }
 

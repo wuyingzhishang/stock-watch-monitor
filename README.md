@@ -39,6 +39,8 @@ npm install
 
 选择一种部署方式继续。直接双击 `index.html` 只能查看静态界面，不能保存业务数据或执行后台监控。
 
+最快的正式部署方式是 GitHub Actions：将代码推送到 `main` 后由工作流自动完成 Cloudflare 部署；首次使用只需先配置一次 GitHub Secrets。
+
 ## Cloudflare Worker + D1：推荐
 
 ### 一键自动部署
@@ -52,9 +54,30 @@ npm run deploy:cloudflare:auto
 
 脚本会优先使用已有的 Wrangler 登录状态；未登录时自动打开浏览器完成登录。也可以提前设置 `CLOUDFLARE_API_TOKEN` 使用无交互认证。首次未设置 `ADMIN_TOKEN` 时会自动生成管理口令并在终端显示一次，请立即保存。数据库名默认使用 `stock-watch-monitor`，可通过 `CLOUDFLARE_D1_NAME` 覆盖。
 
+### GitHub Actions 自动部署
+
+仓库已内置 `.github/workflows/deploy-cloudflare.yml`。推送到 `main` 或在 GitHub Actions 页面手动运行 `Deploy Cloudflare Worker` 时，会自动执行依赖安装、D1 创建/复用、迁移、Secret 设置和 Worker 发布。
+
+在仓库 **Settings → Secrets and variables → Actions** 中添加以下内容：
+
+| 名称 | 类型 | 说明 |
+| --- | --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Secret | 需要 D1、Workers Scripts、Workers Routes/Deploy 权限的 API Token |
+| `CLOUDFLARE_ACCOUNT_ID` | Secret | Cloudflare 账户 ID |
+| `ADMIN_TOKEN` | Secret | 监控面板管理口令，至少 8 位 |
+| `CLOUDFLARE_D1_NAME` | Variable，可选 | D1 名称，默认 `stock-watch-monitor` |
+
+通知渠道可选配置为 GitHub Secrets：`FEISHU_WEBHOOK`、`QQ_WEBHOOK`、`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`、`DINGTALK_WEBHOOK`、`WECOM_WEBHOOK`。已配置的值会在部署时自动写入 Worker Secrets，未配置的渠道保持未连接。
+
+API Token 只放在 GitHub Secrets，不要写入代码、`wrangler.toml` 或日志。工作流使用 `npm ci` 和仓库锁定的依赖版本，部署失败时不会继续发布后续步骤。
+
 不需要购买域名或服务器。免费 Cloudflare 账号即可开始。
 
-### 第 1 步：创建 D1 数据库
+### 手动部署备用流程（可选）
+
+只有不使用一键脚本或 GitHub Actions 时，才需要按下面步骤手动创建和配置 Cloudflare 资源。
+
+#### 第 1 步：创建 D1 数据库
 
 1. 打开 [Cloudflare 控制台](https://dash.cloudflare.com/)并登录。
 2. 左侧进入 **Storage & Databases（存储和数据库）**。
@@ -76,7 +99,7 @@ npx wrangler login
 npx wrangler d1 create stock-watch-monitor
 ```
 
-### 第 2 步：把 D1 绑定到 Worker（手动方式）
+#### 第 2 步：把 D1 绑定到 Worker（手动方式）
 
 不使用一键脚本时，在项目根目录的 `wrangler.toml` 末尾添加 D1 配置，并填入刚才复制的 Database ID：
 
@@ -93,7 +116,7 @@ database_id = "填写你的 Database ID"
 - 不要把管理口令、Webhook 或 Cloudflare API Token 写入该文件。
 - Database ID 可以写在这里，账号密码和 API Token 不可以。
 
-### 第 3 步：登录 Cloudflare
+#### 第 3 步：登录 Cloudflare
 
 在项目目录运行：
 
@@ -103,7 +126,7 @@ npx wrangler login
 
 浏览器会打开 Cloudflare 授权页，点击 **Allow（允许）**，然后回到 PowerShell。
 
-### 第 4 步：创建数据库表
+#### 第 4 步：创建数据库表
 
 项目的数据库结构位于 `migrations` 目录。执行：
 
@@ -134,7 +157,7 @@ inventory_events
 notification_log
 ```
 
-### 第 5 步：发布 Worker
+#### 第 5 步：发布 Worker
 
 ```powershell
 npx wrangler deploy
@@ -148,7 +171,7 @@ https://stock-watch-monitor.你的账号.workers.dev
 
 打开这个地址即可访问监控面板。页面顶部应显示“Worker 版”。
 
-### 第 6 步：设置管理口令
+#### 第 6 步：设置管理口令
 
 `ADMIN_TOKEN` 用于从网页读取、保存 D1 业务数据和发送测试通知。它不是 Cloudflare 登录密码。
 
@@ -170,7 +193,7 @@ npx wrangler secret put ADMIN_TOKEN
 
 每次重新打开或刷新监控面板，都需要输入同一个管理口令解锁。网页只在当前页面内存中保留口令，不写入 Cookie 或浏览器存储；普通界面偏好和短期缓存不受此限制。
 
-### 第 7 步：确认 D1 和定时任务
+#### 第 7 步：确认 D1 和定时任务
 
 进入 Cloudflare 的 `stock-watch-monitor` Worker，检查：
 

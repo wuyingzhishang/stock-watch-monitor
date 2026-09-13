@@ -36,6 +36,25 @@ npm run deploy:cloudflare:auto
 
 脚本优先使用现有 Wrangler 登录状态；未登录时会自动打开浏览器。CI 或无浏览器环境可设置 `CLOUDFLARE_API_TOKEN` 后执行。首次未提供 `ADMIN_TOKEN` 时脚本会生成随机口令并只在终端显示一次。需要更换数据库名称时设置 `CLOUDFLARE_D1_NAME`。
 
+### GitHub Actions 自动部署
+
+仓库内置 `.github/workflows/deploy-cloudflare.yml`，在推送 `main` 或手动运行工作流时自动执行部署脚本。先在 GitHub 仓库 **Settings → Secrets and variables → Actions** 配置：
+
+| 名称 | 类型 | 用途 |
+| --- | --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Secret | Wrangler 调用 Cloudflare API |
+| `CLOUDFLARE_ACCOUNT_ID` | Secret | 指定 Cloudflare 账户 |
+| `ADMIN_TOKEN` | Secret | Worker 管理口令 |
+| `CLOUDFLARE_D1_NAME` | Variable，可选 | 自定义 D1 名称，默认 `stock-watch-monitor` |
+
+通知渠道可选添加为 GitHub Secrets：`FEISHU_WEBHOOK`、`QQ_WEBHOOK`、`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`、`DINGTALK_WEBHOOK`、`WECOM_WEBHOOK`。工作流只同步已配置的值，不会清空未配置渠道。
+
+API Token 至少需要 D1 数据库读写、Workers Scripts 编辑和部署权限。GitHub Actions 环境中必须提供 `ADMIN_TOKEN`，脚本不会生成并输出临时口令。
+
+### 手动部署备用流程（可选）
+
+只有不使用一键脚本或 GitHub Actions 时，才需要按下面步骤手动创建和配置 Cloudflare 资源。
+
 1. 安装依赖并登录。
 
 ```powershell
