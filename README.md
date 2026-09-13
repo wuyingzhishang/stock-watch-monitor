@@ -39,7 +39,7 @@ npm install
 
 选择一种部署方式继续。直接双击 `index.html` 只能查看静态界面，不能保存业务数据或执行后台监控。
 
-最快的正式部署方式是 GitHub Actions：将代码推送到 `main` 后由工作流自动完成 Cloudflare 部署；首次使用只需先配置一次 GitHub Secrets。
+最快的正式部署方式是 GitHub Actions：首次配置 GitHub Secrets 后，在 Actions 页面手动运行部署工作流即可。为避免意外发布，工作流默认不会随代码推送自动运行。
 
 ## Cloudflare Worker + D1：推荐
 
@@ -56,7 +56,7 @@ npm run deploy:cloudflare:auto
 
 ### GitHub Actions 自动部署
 
-仓库已内置 `.github/workflows/deploy-cloudflare.yml`。推送到 `main` 或在 GitHub Actions 页面手动运行 `Deploy Cloudflare Worker` 时，会自动执行依赖安装、D1 创建/复用、迁移、Secret 设置和 Worker 发布。
+仓库已内置 `.github/workflows/deploy-cloudflare.yml`。工作流默认关闭推送触发，仅在 GitHub Actions 页面手动运行 `Deploy Cloudflare Worker` 时执行依赖安装、D1 创建/复用、迁移、Secret 设置和 Worker 发布。
 
 在仓库 **Settings → Secrets and variables → Actions** 中添加以下内容：
 

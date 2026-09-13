@@ -38,7 +38,7 @@ npm run deploy:cloudflare:auto
 
 ### GitHub Actions 自动部署
 
-仓库内置 `.github/workflows/deploy-cloudflare.yml`，在推送 `main` 或手动运行工作流时自动执行部署脚本。先在 GitHub 仓库 **Settings → Secrets and variables → Actions** 配置：
+仓库内置 `.github/workflows/deploy-cloudflare.yml`，默认关闭推送触发，仅在 GitHub Actions 页面手动运行工作流时执行部署脚本。先在 GitHub 仓库 **Settings → Secrets and variables → Actions** 配置：
 
 | 名称 | 类型 | 用途 |
 | --- | --- | --- |
