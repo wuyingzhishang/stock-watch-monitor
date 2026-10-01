@@ -27,16 +27,22 @@ jobs:
       WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@1e60f620b9541dca9c7d7b2c5d3e2f2f7f5f6f5f # v4.0.3
         with:
           node-version: 20
           cache: npm
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Validate Worker bundle
+        run: npx --yes wrangler@latest deploy --dry-run
 
       - name: Validate required secrets
         run: |

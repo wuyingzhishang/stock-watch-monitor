@@ -4,6 +4,8 @@ const MAX_SHOPS = 50;
 const MAX_PRODUCTS = 2000;
 const MAX_TIMELINE_ITEMS = 100;
 const CLOUD_STATE_SCHEMA_VERSION = 4;
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 15000;
+const MAX_NOTIFICATION_RETRIES = 3;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -11,7 +13,9 @@ function json(data, status = 200) {
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
-      "access-control-allow-origin": "*",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      ...(status === 204 ? {} : {}),
       "access-control-allow-headers": "content-type, x-admin-token"
     }
   });
@@ -61,7 +65,8 @@ async function post(upstream, path, payload) {
       "user-agent": "Mozilla/5.0 (compatible; StockWatchMonitor/0.1)",
       referer: `${upstream}/`
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(DEFAULT_UPSTREAM_TIMEOUT_MS)
   });
   if (!response.ok) throw new Error(`上游接口返回 ${response.status}`);
   const data = await response.json();
@@ -485,22 +490,29 @@ function notificationStatus(env) {
   };
 }
 
-async function deliver(channel, url, body) {
-  try {
-    const result = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
-    return { channel, ok: result.ok, status: result.status };
-  } catch (error) {
-    return { channel, ok: false, error: error instanceof Error ? error.message : "投递失败" };
+async function deliver(channel, url, body, env) {
+  let lastError = "投递失败";
+  const retries = Math.min(MAX_NOTIFICATION_RETRIES, Math.max(0, Number(env?.NOTIFICATION_RETRIES) || 2));
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const result = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(DEFAULT_UPSTREAM_TIMEOUT_MS) });
+      if (result.ok || (result.status >= 400 && result.status < 500 && result.status !== 429)) return { channel, ok: result.ok, status: result.status };
+      lastError = `HTTP ${result.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "投递失败";
+    }
+    if (attempt < retries) await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
   }
+  return { channel, ok: false, error: lastError };
 }
 
 async function notifyAll(env, text) {
   const tasks = [];
-  if (env.FEISHU_WEBHOOK) tasks.push(deliver("feishu", env.FEISHU_WEBHOOK, { msg_type: "text", content: { text } }));
-  if (env.QQ_WEBHOOK) tasks.push(deliver("qq", env.QQ_WEBHOOK, { msg_type: "text", content: text, message: text }));
-  if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) tasks.push(deliver("telegram", `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, { chat_id: env.TELEGRAM_CHAT_ID, text }));
-  if (env.DINGTALK_WEBHOOK) tasks.push(deliver("dingtalk", env.DINGTALK_WEBHOOK, { msgtype: "text", text: { content: text } }));
-  if (env.WECOM_WEBHOOK) tasks.push(deliver("wecom", env.WECOM_WEBHOOK, { msgtype: "text", text: { content: text } }));
+  if (env.FEISHU_WEBHOOK) tasks.push(deliver("feishu", env.FEISHU_WEBHOOK, { msg_type: "text", content: { text } }, env));
+  if (env.QQ_WEBHOOK) tasks.push(deliver("qq", env.QQ_WEBHOOK, { msg_type: "text", content: text, message: text }, env));
+  if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) tasks.push(deliver("telegram", `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, { chat_id: env.TELEGRAM_CHAT_ID, text }, env));
+  if (env.DINGTALK_WEBHOOK) tasks.push(deliver("dingtalk", env.DINGTALK_WEBHOOK, { msgtype: "text", text: { content: text } }, env));
+  if (env.WECOM_WEBHOOK) tasks.push(deliver("wecom", env.WECOM_WEBHOOK, { msgtype: "text", text: { content: text } }, env));
   const results = await Promise.all(tasks);
   return { sent: results.some(result => result.ok), configured: results.length, results };
 }

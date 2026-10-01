@@ -4,7 +4,8 @@ function json(data, status = 200) {
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
-      "access-control-allow-origin": "*",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
       "access-control-allow-headers": "content-type, x-proxy-url"
     }
   });

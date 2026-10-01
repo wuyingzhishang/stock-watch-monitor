@@ -104,6 +104,8 @@ npm run deploy
 
 ## 部署到 Docker
 
+默认 API 仅允许同源访问。确需跨域嵌入时，设置 `ALLOWED_ORIGIN` 为单一可信来源，不要使用 `*`；管理口令仍必须通过请求头发送。
+
 1. 创建配置文件。
 
 ```powershell

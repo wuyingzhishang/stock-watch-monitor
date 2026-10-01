@@ -27,6 +27,9 @@
 
 ## 获取项目
 
+运维、健康检查、备份和回滚步骤见 [`docs/operations.md`](docs/operations.md)；部署细节见 [`docs/deployment.md`](docs/deployment.md)。
+架构说明见 [`docs/architecture.md`](docs/architecture.md)，项目采用 MIT License。
+
 需要 Node.js 20 或更高版本。首次使用时，在 PowerShell 中获取项目并进入项目目录：
 
 ```powershell

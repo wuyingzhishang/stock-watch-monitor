@@ -22,6 +22,7 @@ try {
 
 const port = Number(process.env.PORT || 8788);
 const host = process.env.HOST || "0.0.0.0";
+const allowedOrigin = String(process.env.ALLOWED_ORIGIN || "").trim();
 const upstream = String(process.env.UPSTREAM_BASE_URL || "").replace(/\/+$/, "");
 const demoMode = process.env.DEMO_MODE !== "false";
 const allowDynamicUpstream = process.env.ALLOW_DYNAMIC_UPSTREAM === "true";
@@ -29,6 +30,7 @@ const defaultProxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || "";
 const defaultDispatcher = createDispatcher(defaultProxy);
 const configuredUpstreamTimeoutMs = Number(process.env.UPSTREAM_TIMEOUT_MS || 15000);
 const upstreamTimeoutMs = Number.isFinite(configuredUpstreamTimeoutMs) ? Math.max(1000, configuredUpstreamTimeoutMs) : 15000;
+const notificationRetryCount = Math.min(3, Math.max(0, Number(process.env.NOTIFICATION_RETRIES || 2)));
 const monitorStateFile = process.env.MONITOR_STATE_FILE || "/data/monitor-state.json";
 const monitorConfigFile = process.env.MONITOR_CONFIG_FILE || "/data/monitor-config.json";
 const notificationConfigFile = process.env.NOTIFICATION_CONFIG_FILE || "/data/notification-config.json";
@@ -43,6 +45,7 @@ const notificationFields = {
 };
 let backgroundMonitorTimer;
 let backgroundMonitorRunning = false;
+const monitorHealth = { lastStartedAt: null, lastFinishedAt: null, lastSuccessAt: null, lastError: null, lastRuleCount: 0 };
 let appStateWriteQueue = Promise.resolve();
 
 const mimeTypes = {
@@ -81,7 +84,7 @@ function requestIsSameOrigin(request) {
 }
 
 function sendJson(response, data, status = 200) {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "*", "access-control-allow-headers": "content-type, x-proxy-url, x-admin-token" });
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", ...(allowedOrigin ? { "access-control-allow-origin": allowedOrigin, vary: "Origin" } : {}), "access-control-allow-headers": "content-type, x-proxy-url, x-admin-token" });
   response.end(JSON.stringify(data));
 }
 
@@ -383,12 +386,18 @@ async function handleStock(request, response, url) {
 }
 
 async function deliver(url, body, dispatcher) {
-  try {
-    const result = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), dispatcher, signal: AbortSignal.timeout(upstreamTimeoutMs) });
-    return { ok: result.ok, status: result.status };
-  } catch (error) {
-    return { ok: false, error: error.message || "投递失败" };
+  let lastError = "投递失败";
+  for (let attempt = 0; attempt <= notificationRetryCount; attempt += 1) {
+    try {
+      const result = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), dispatcher, signal: AbortSignal.timeout(upstreamTimeoutMs) });
+      if (result.ok || (result.status >= 400 && result.status < 500 && result.status !== 429)) return { ok: result.ok, status: result.status };
+      lastError = `HTTP ${result.status}`;
+    } catch (error) {
+      lastError = error.message || "投递失败";
+    }
+    if (attempt < notificationRetryCount) await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
   }
+  return { ok: false, error: lastError };
 }
 
 async function notifyAll(text, dispatcher) {
@@ -575,7 +584,7 @@ async function serveStatic(response, pathname) {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
   if (request.method === "OPTIONS") return sendJson(response, {}, 204);
-  if (request.method === "GET" && url.pathname === "/healthz") return sendJson(response, { ok: true, time: Date.now() });
+  if (request.method === "GET" && url.pathname === "/healthz") return sendJson(response, { ok: !monitorHealth.lastError, time: Date.now(), monitor: { running: backgroundMonitorRunning, ...monitorHealth } }, monitorHealth.lastError ? 503 : 200);
   if (request.method === "GET" && url.pathname === "/api/stock") return handleStock(request, response, url);
   if (request.method === "GET" && url.pathname === "/api/app-state") return handleAppStateRead(request, response);
   if (request.method === "POST" && url.pathname === "/api/app-state") return handleAppStateSave(request, response);
@@ -627,8 +636,11 @@ async function monitorRules() {
 async function runBackgroundMonitor() {
   if (backgroundMonitorRunning) return;
   backgroundMonitorRunning = true;
+  monitorHealth.lastStartedAt = new Date().toISOString();
+  monitorHealth.lastError = null;
   try {
     const rules = await monitorRules();
+    monitorHealth.lastRuleCount = rules.length;
     const previous = await readMonitorState();
     const next = { rules: {}, checkedAt: new Date().toISOString() };
     const shopCache = new Map();
@@ -696,9 +708,12 @@ async function runBackgroundMonitor() {
         await writeAppStateRecord({ revision: record.revision + 1, updatedAt: checkedAt, state: record.state });
       });
     }
+    monitorHealth.lastSuccessAt = new Date().toISOString();
   } catch (error) {
+    monitorHealth.lastError = error.message || "后台监控失败";
     console.error(`[后台监控] 检查失败：${error.message}`);
   } finally {
+    monitorHealth.lastFinishedAt = new Date().toISOString();
     backgroundMonitorRunning = false;
   }
 }
